@@ -1,0 +1,3 @@
+CocaCola_Residual_3D_STD_and_MAD_with_weights.html
+CocaCola_Residual_3D_STD_with_weights.html
+CocaCola_Residual_3D_MAD_with_weights.html
