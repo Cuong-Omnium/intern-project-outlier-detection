@@ -171,7 +171,6 @@ def apply_filters(
         col_name = find_column(
             filtered_data,
             column_map,
-            "ACV > 10",
             "ACV Weighted Distribution",
             "ACV_Weighted_Distribution",
             "ACV",

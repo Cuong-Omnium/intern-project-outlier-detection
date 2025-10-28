@@ -178,7 +178,7 @@ class RegressionPipelineBuilder:
             dep_values = data[self.config.dependent_var].values
 
             # Check for negative values
-            if np.any(dep_values < 0):
+            if np.any(np.array(dep_values) < 0):
                 raise ValueError(
                     f"Dependent variable '{self.config.dependent_var}' contains negative values. "
                     "Cannot log-transform."
