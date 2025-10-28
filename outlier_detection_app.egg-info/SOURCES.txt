@@ -10,8 +10,12 @@ src/test_setup.py
 src/analysis/__init__.py
 src/config/__init__.py
 src/data/__init__.py
+src/data/filters.py
 src/data/loader.py
 src/models/__init__.py
+src/models/config.py
+src/models/regression.py
+src/models/transformers.py
 src/utils/__init__.py
 src/visualization/__init__.py
 tests/__init__.py
