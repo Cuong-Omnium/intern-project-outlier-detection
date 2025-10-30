@@ -40,6 +40,11 @@ from src.models.config import RegressionConfig
 from src.models.regression import RegressionPipelineBuilder
 from src.outliers.analyzer import OutlierAnalyzer
 from src.outliers.config import OutlierConfig
+from src.utils.time_periods import (
+    create_time_periods,
+    get_recommended_period_lengths,
+    validate_period_coverage,
+)
 from src.visualization.plots import (
     create_account_time_series,
     create_all_account_charts,
@@ -476,66 +481,150 @@ def page_configure_analysis():
             "categorical_vars": categorical_vars,
         }
 
-        # SECTION 3: K-FOLD
+        # SECTION 3: K-FOLD (UPDATED)
         st.subheader("3️⃣ K-Fold Cross-Validation")
 
         kfold_config = st.session_state.get("kfold_config", {})
 
         with st.expander("🔄 Configure K-Fold", expanded=True):
 
+            # TIME PERIOD SEGMENTATION
+            st.markdown("#### 📅 Time Period Segmentation")
+
+            period_options = get_recommended_period_lengths(
+                filtered, date_column="Date"
+            )
+
+            if not period_options:
+                st.error("❌ Insufficient data for time-based k-fold analysis")
+            else:
+                # Show options
+                col1, col2 = st.columns([2, 1])
+
+                with col1:
+                    st.markdown("**Available Period Lengths:**")
+
+                    for opt in period_options:
+                        icon = (
+                            "⭐"
+                            if opt["recommended"]
+                            else "✓" if opt["is_valid"] else "❌"
+                        )
+                        st.write(
+                            f"{icon} **{opt['weeks']} weeks** → {opt['num_periods']} periods"
+                        )
+
+                with col2:
+                    valid_weeks = [
+                        opt["weeks"] for opt in period_options if opt["is_valid"]
+                    ]
+
+                    if valid_weeks:
+                        default_weeks = kfold_config.get(
+                            "period_weeks", 13 if 13 in valid_weeks else valid_weeks[0]
+                        )
+
+                        period_weeks = st.selectbox(
+                            "Select period length",
+                            options=valid_weeks,
+                            index=(
+                                valid_weeks.index(default_weeks)
+                                if default_weeks in valid_weeks
+                                else 0
+                            ),
+                            format_func=lambda x: f"{x} weeks",
+                        )
+
+                        # IMPORTANT: Always store this, even if user doesn't click anything
+                        st.session_state.period_weeks = period_weeks
+                    else:
+                        st.error("No valid period lengths available")
+                        # Set a default
+                        st.session_state.period_weeks = 13
+                        return
+
+                # Show selected period info
+                selected_option = next(
+                    opt for opt in period_options if opt["weeks"] == period_weeks
+                )
+                st.info(f"📊 {selected_option['message']}")
+
+                # Preview period distribution
+                with st.expander("👁️ Preview Period Distribution"):
+                    is_valid, message, period_summary = validate_period_coverage(
+                        filtered, "Date", period_weeks
+                    )
+
+                    if period_summary is not None:
+                        st.dataframe(period_summary, use_container_width=True)
+
             # Optimal K finder
             st.markdown("#### 🎯 Optimal K Selection")
 
-            st.info(
-                "💡 The system can automatically find the optimal number of folds by testing different values."
-            )
+            st.info("💡 The system can automatically find the optimal number of folds.")
 
             if st.button("🔍 Find Optimal K", use_container_width=True):
                 if continuous_vars or categorical_vars:
-                    find_optimal_k(filtered, dep_var, continuous_vars, categorical_vars)
+                    # Create time periods BEFORE finding optimal k
+                    filtered_with_periods = create_time_periods(
+                        filtered,
+                        date_column="Date",
+                        period_weeks=st.session_state.period_weeks,
+                        period_column_name="_Auto_Time_Period",
+                    )
+                    st.session_state.filtered_data_with_periods = filtered_with_periods
+
+                    find_optimal_k(
+                        filtered_with_periods,
+                        dep_var,
+                        continuous_vars,
+                        categorical_vars,
+                        period_column="_Auto_Time_Period",
+                    )
                 else:
                     st.error("Configure model variables first!")
 
-        # SHOW OPTIMAL K RESULTS OUTSIDE THE EXPANDER (full width)
+        # SHOW OPTIMAL K RESULTS OUTSIDE EXPANDER
         if st.session_state.optimal_k is not None:
             st.success(f"✅ Suggested optimal K: **{st.session_state.optimal_k}**")
 
-            # Plot at full width, NOT inside expander
             fig = create_optimal_k_plot(st.session_state.optimal_k_results)
             st.plotly_chart(fig, use_container_width=True)
 
-        # Continue with K-Fold settings inside expander
+        # K-FOLD SETTINGS
         with st.expander("🔄 Configure K-Fold", expanded=True):
             st.markdown("#### ⚙️ K-Fold Settings")
 
             col1, col2 = st.columns(2)
 
             with col1:
+                # Get the number of periods available
+                if "period_weeks" in st.session_state:
+                    period_opts = get_recommended_period_lengths(filtered, "Date")
+                    selected_opt = next(
+                        opt
+                        for opt in period_opts
+                        if opt["weeks"] == st.session_state.period_weeks
+                    )
+                    max_k = selected_opt["num_periods"]
+                else:
+                    max_k = 10
+
                 default_k = (
                     st.session_state.optimal_k
                     if st.session_state.optimal_k
                     else kfold_config.get("n_splits", 5)
                 )
+                default_k = min(default_k, max_k)  # Don't exceed available periods
+
                 n_splits = st.slider(
                     "Number of folds (K)",
                     min_value=2,
-                    max_value=10,
+                    max_value=max_k,
                     value=default_k,
-                    help="Higher K = more robust but slower",
+                    help=f"Max K = {max_k} (based on {st.session_state.get('period_weeks', 13)}-week periods)",
                 )
 
-                period_cols = [
-                    col
-                    for col in filtered.columns
-                    if "period" in col.lower() or "week" in col.lower()
-                ]
-                group_col = st.selectbox(
-                    "Time period column",
-                    options=period_cols if period_cols else filtered.columns,
-                    index=0,
-                )
-
-            with col2:
                 account_col = st.selectbox(
                     "Account column",
                     options=categorical_cols,
@@ -546,6 +635,7 @@ def page_configure_analysis():
                     ),
                 )
 
+            with col2:
                 weight_options = ["None"] + [col for col in numeric_cols]
                 default_weight = kfold_config.get("weight_column", "Auto_Base_Units")
                 weight_col = st.selectbox(
@@ -558,9 +648,16 @@ def page_configure_analysis():
                     ),
                 )
 
+                st.info(
+                    f"📊 Using auto-generated {st.session_state.get('period_weeks', 13)}-week periods"
+                )
+
         st.session_state.kfold_config = {
             "n_splits": n_splits,
-            "group_column": group_col,
+            "period_weeks": st.session_state.get(
+                "period_weeks", 13
+            ),  # Always include this
+            "group_column": "_Auto_Time_Period",  # Use auto-generated column
             "account_column": account_col,
             "weight_column": None if weight_col == "None" else weight_col,
         }
@@ -661,7 +758,9 @@ def page_configure_analysis():
         )
 
 
-def find_optimal_k(data, dep_var, continuous_vars, categorical_vars):
+def find_optimal_k(
+    data, dep_var, continuous_vars, categorical_vars, period_column="_Auto_Time_Period"
+):
     """Find optimal K using k-fold analysis."""
 
     with st.spinner("🔍 Finding optimal K (testing k=2 to k=10)..."):
@@ -677,22 +776,29 @@ def find_optimal_k(data, dep_var, continuous_vars, categorical_vars):
             X, y = builder.prepare_data(data)
             pipeline = builder.build()
 
+            # Get account column
+            account_col = st.session_state.kfold_config.get("account_column", "Account")
+            weight_col = st.session_state.kfold_config.get("weight_column")
+
+            # Determine max K based on number of periods
+            max_k = data[period_column].nunique()
+            k_range = range(2, min(11, max_k + 1))
+
             # Test different K values
-            kfold_config = st.session_state.kfold_config
             temp_config = KFoldConfig(
-                n_splits=5,
-                group_column=kfold_config["group_column"],
-                account_column=kfold_config["account_column"],
-                weight_column=kfold_config["weight_column"],
+                n_splits=5,  # Will be changed in loop
+                group_column=period_column,
+                account_column=account_col,
+                weight_column=weight_col,
                 verbose=False,
             )
 
             analyzer = KFoldAnalyzer(temp_config)
             optimal_k, k_results = analyzer.find_optimal_k(
-                data, X, y, pipeline, k_range=range(2, 11)
+                data, X, y, pipeline, k_range=k_range
             )
 
-            # STORE results in session state
+            # Store results
             st.session_state.optimal_k = optimal_k
             st.session_state.optimal_k_results = k_results
 
@@ -766,35 +872,62 @@ def run_complete_analysis():
     status_text = st.empty()
 
     try:
+        # STEP 0: Create time periods
+        status_text.markdown("### 🗓️ Step 0/3: Creating time periods...")
+        progress_bar.progress(5)
+
+        from src.utils.time_periods import create_time_periods
+
+        # Get period configuration
+        period_weeks = st.session_state.kfold_config.get("period_weeks", 13)
+
+        # Create time periods on filtered data
+        filtered_with_periods = create_time_periods(
+            st.session_state.filtered_data,
+            date_column="Date",
+            period_weeks=period_weeks,
+            period_column_name="_Auto_Time_Period",
+        )
+
+        # Store for later use
+        st.session_state.filtered_data_with_periods = filtered_with_periods
+
+        n_periods = filtered_with_periods["_Auto_Time_Period"].nunique()
+        status_text.markdown(f"✅ Created {n_periods} periods of {period_weeks} weeks")
+        time.sleep(0.5)
+
         # STEP 1: Build Model
         status_text.markdown("### 🔨 Step 1/3: Building regression model...")
-        progress_bar.progress(10)
+        progress_bar.progress(15)
         time.sleep(0.3)
 
         reg_config = RegressionConfig(**st.session_state.reg_config)
         builder = RegressionPipelineBuilder(reg_config)
-        X, y = builder.prepare_data(st.session_state.filtered_data)
+        X, y = builder.prepare_data(filtered_with_periods)  # Use data WITH periods
         pipeline = builder.build()
 
-        progress_bar.progress(25)
+        progress_bar.progress(30)
         status_text.markdown("✅ Model built successfully")
         time.sleep(0.5)
 
         # STEP 2: K-Fold
         status_text.markdown("### 🔄 Step 2/3: Running K-Fold cross-validation...")
-        progress_bar.progress(30)
+        progress_bar.progress(35)
 
-        kfold_config = KFoldConfig(**st.session_state.kfold_config)
+        # Create KFold config with auto-generated period column
+        kfold_config_dict = st.session_state.kfold_config.copy()
+        kfold_config_dict["group_column"] = "_Auto_Time_Period"
+
+        kfold_config = KFoldConfig(**kfold_config_dict)
         kfold_analyzer = KFoldAnalyzer(kfold_config)
 
-        # Simulate fold progress
         with st.spinner(f"Running {kfold_config.n_splits}-fold cross-validation..."):
             kfold_results = kfold_analyzer.run(
-                st.session_state.filtered_data, X, y, pipeline
+                filtered_with_periods, X, y, pipeline  # Use data WITH periods
             )
 
         st.session_state.kfold_results = kfold_results
-        progress_bar.progress(60)
+        progress_bar.progress(65)
         status_text.markdown(
             f"✅ K-Fold complete: MSE={kfold_results.mean_mse:.4f}, R²={kfold_results.mean_r2:.4f}"
         )
@@ -802,7 +935,7 @@ def run_complete_analysis():
 
         # STEP 3: Outlier Detection
         status_text.markdown("### 🎯 Step 3/3: Detecting outlier accounts...")
-        progress_bar.progress(65)
+        progress_bar.progress(70)
 
         outlier_config = OutlierConfig(**st.session_state.outlier_config)
         outlier_analyzer = OutlierAnalyzer(outlier_config)
@@ -857,6 +990,10 @@ def page_view_results():
     results = st.session_state.outlier_results
     kfold_results = st.session_state.kfold_results
 
+    # Get period info if available
+    period_weeks = st.session_state.kfold_config.get("period_weeks", 13)
+    n_splits = st.session_state.kfold_config.get("n_splits", 5)
+
     # Tabs
     tab1, tab2, tab3, tab4 = st.tabs(
         ["📈 Overview", "🎯 Outliers", "📊 3D Visualization", "💾 Export"]
@@ -864,6 +1001,26 @@ def page_view_results():
 
     with tab1:
         st.subheader("Analysis Overview")
+
+        # Show configuration used
+        with st.expander("⚙️ Analysis Configuration"):
+            st.markdown(
+                f"""
+            **Time Segmentation:**
+            - Period Length: {period_weeks} weeks
+            - Number of Periods: {st.session_state.filtered_data_with_periods['_Auto_Time_Period'].nunique() if 'filtered_data_with_periods' in st.session_state else 'N/A'}
+            - K-Folds: {n_splits}
+
+            **Model:**
+            - Dependent Variable: {st.session_state.reg_config['dependent_var']}
+            - Continuous Variables: {len(st.session_state.reg_config['continuous_vars'])}
+            - Categorical Variables: {len(st.session_state.reg_config['categorical_vars'])}
+
+            **Outlier Detection:**
+            - Contamination: {st.session_state.outlier_config['contamination']:.0%}
+            - Method Used: {results.density_method}
+            """
+            )
 
         col1, col2, col3, col4 = st.columns(4)
         with col1:
@@ -991,11 +1148,23 @@ def page_account_charts():
     """Page 5: View account time series charts."""
     st.header("📈 Step 5: Account Time Series Charts")
 
-    if st.session_state.filtered_data is None:
-        st.warning("⚠️ Upload and filter data first")
+    # USE ORIGINAL DATA, NOT FILTERED DATA
+    if st.session_state.data is None:
+        st.warning("⚠️ Upload data first")
         return
 
-    data = st.session_state.filtered_data
+    # Use unfiltered data for charts to show full picture
+    data = st.session_state.data.copy()
+
+    # Apply ONLY essential filters (keep outlier-relevant accounts)
+    if st.session_state.filtered_data is not None:
+        # Get the accounts that passed filtering
+        filtered_accounts = st.session_state.filtered_data["Account"].unique()
+        # Show only those accounts, but with ALL their data (including promos)
+        data = data[data["Account"].isin(filtered_accounts)]
+        st.info(
+            f"📊 Showing full data (including promos) for {len(filtered_accounts)} filtered accounts"
+        )
 
     # Get list of accounts
     accounts = sorted(data["Account"].unique())
