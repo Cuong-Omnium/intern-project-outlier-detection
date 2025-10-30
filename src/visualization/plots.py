@@ -381,3 +381,173 @@ def create_optimal_k_plot(k_results_df: pd.DataFrame) -> go.Figure:
     )
 
     return fig
+
+
+def create_account_time_series(
+    data: pd.DataFrame,
+    account: str,
+    date_range: Optional[tuple] = None,
+    title: Optional[str] = None,
+) -> go.Figure:
+    """
+    Create time series chart for a single account matching the reference style.
+
+    Shows:
+    - Primary axis: Unit Sales and Base Units (both lines)
+    - Secondary axis: Average Price and Average Base Price (both lines)
+
+    Args:
+        data: DataFrame with account data
+        account: Account name to plot
+        date_range: Optional tuple of (min_date, max_date) for consistent x-axis
+        title: Optional custom title
+
+    Returns:
+        Plotly Figure
+    """
+    from plotly.subplots import make_subplots
+
+    # Filter to this account
+    account_data = data[data["Account"] == account].copy()
+
+    if len(account_data) == 0:
+        # Return empty figure with message
+        fig = go.Figure()
+        fig.add_annotation(
+            text=f"No data available for account: {account}",
+            xref="paper",
+            yref="paper",
+            x=0.5,
+            y=0.5,
+            showarrow=False,
+            font=dict(size=16, color="red"),
+        )
+        return fig
+
+    # Sort by date
+    account_data["Date"] = pd.to_datetime(account_data["Date"])
+    account_data = account_data.sort_values("Date")
+
+    # Calculate average prices
+    account_data["Avg_Price"] = (
+        account_data["Dollar_Sales"] / account_data["Unit_Sales"]
+    ).replace([np.inf, -np.inf], np.nan)
+
+    account_data["Avg_Base_Price"] = (
+        account_data["Auto_Base_Dollars"] / account_data["Auto_Base_Units"]
+    ).replace([np.inf, -np.inf], np.nan)
+
+    # Create figure with secondary y-axis
+    fig = make_subplots(specs=[[{"secondary_y": True}]])
+
+    # Primary axis: Unit Sales (teal line)
+    fig.add_trace(
+        go.Scatter(
+            x=account_data["Date"],
+            y=account_data["Unit_Sales"],
+            name="Unit Sales",
+            line=dict(color="#008080", width=2),
+            mode="lines",
+        ),
+        secondary_y=False,
+    )
+
+    # Primary axis: Base Units (orange line)
+    fig.add_trace(
+        go.Scatter(
+            x=account_data["Date"],
+            y=account_data["Auto_Base_Units"],
+            name="Base Units",
+            line=dict(color="#FF8C00", width=2),
+            mode="lines",
+        ),
+        secondary_y=False,
+    )
+
+    # Secondary axis: Average Price (teal line, thinner)
+    fig.add_trace(
+        go.Scatter(
+            x=account_data["Date"],
+            y=account_data["Avg_Price"],
+            name="Average Price",
+            line=dict(color="#008080", width=1.5, dash="dot"),
+            mode="lines",
+        ),
+        secondary_y=True,
+    )
+
+    # Secondary axis: Average Base Price (orange line, thinner)
+    fig.add_trace(
+        go.Scatter(
+            x=account_data["Date"],
+            y=account_data["Avg_Base_Price"],
+            name="Average Base Price",
+            line=dict(color="#FF8C00", width=1.5, dash="dot"),
+            mode="lines",
+        ),
+        secondary_y=True,
+    )
+
+    # Set x-axis range if provided (for consistency across accounts)
+    if date_range:
+        fig.update_xaxes(range=date_range)
+
+    # Update axes
+    fig.update_xaxes(title_text="Date", showgrid=True, gridcolor="lightgray")
+
+    fig.update_yaxes(
+        title_text="Units",
+        secondary_y=False,
+        showgrid=True,
+        gridcolor="lightgray",
+        rangemode="tozero",  # Start from 0
+    )
+
+    fig.update_yaxes(
+        title_text="Price ($)",
+        secondary_y=True,
+        showgrid=False,
+        rangemode="tozero",  # Start from 0
+        tickprefix="$",
+    )
+
+    # Update layout
+    fig.update_layout(
+        title=title or f"Sales & Price Trends - {account}",
+        height=500,
+        hovermode="x unified",
+        legend=dict(orientation="v", yanchor="top", y=1, xanchor="right", x=1.15),
+        plot_bgcolor="white",
+        paper_bgcolor="white",
+    )
+
+    return fig
+
+
+def create_all_account_charts(
+    data: pd.DataFrame, accounts: list, max_charts: int = 50
+) -> list[go.Figure]:
+    """
+    Create time series charts for multiple accounts with consistent date ranges.
+
+    Args:
+        data: Full dataset
+        accounts: List of account names to plot
+        max_charts: Maximum number of charts to create
+
+    Returns:
+        List of Plotly figures
+    """
+    # Get global date range
+    data["Date"] = pd.to_datetime(data["Date"])
+    date_range = (data["Date"].min(), data["Date"].max())
+
+    figures = []
+
+    for account in accounts[:max_charts]:
+        fig = create_account_time_series(
+            data=data, account=account, date_range=date_range
+        )
+        figures.append(fig)
+
+    return figures
