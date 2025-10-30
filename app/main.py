@@ -1,6 +1,6 @@
 """
 Streamlit web application for Account Outlier Detection.
-Enhanced with loading animations, config management, and improved charts.
+Enhanced with loading animations, config management, optimal k-fold, and improved charts.
 """
 
 # Path setup
@@ -16,7 +16,6 @@ import time
 import numpy as np
 import pandas as pd
 import streamlit as st
-import yaml
 
 # Configure page
 st.set_page_config(
@@ -49,19 +48,26 @@ from src.visualization.plots import (
     create_optimal_k_plot,
 )
 
+
 # Initialize session state
-if "data" not in st.session_state:
-    st.session_state.data = None
-if "filtered_data" not in st.session_state:
-    st.session_state.filtered_data = None
-if "outlier_results" not in st.session_state:
-    st.session_state.outlier_results = None
-if "kfold_results" not in st.session_state:
-    st.session_state.kfold_results = None
-if "config_manager" not in st.session_state:
-    st.session_state.config_manager = ConfigManager()
-if "optimal_k" not in st.session_state:
-    st.session_state.optimal_k = None
+def init_session_state():
+    """Initialize all session state variables."""
+    defaults = {
+        "data": None,
+        "filtered_data": None,
+        "outlier_results": None,
+        "kfold_results": None,
+        "optimal_k": None,
+        "config_manager": ConfigManager(),
+        "current_page": "1️⃣ Upload Data",
+    }
+
+    for key, value in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = value
+
+
+init_session_state()
 
 
 def show_loading_animation(message: str, duration: float = 0.5):
@@ -109,16 +115,16 @@ def main():
         unsafe_allow_html=True,
     )
 
-    # Title
+    # Header
     st.title("🔍 Account Outlier Detection")
     st.markdown("**Identify problematic accounts in CPG linear regression models**")
     st.markdown("---")
 
     # Sidebar
     with st.sidebar:
-        st.header("📍 Navigation")
+        st.markdown("### 📍 Navigation")
         page = st.radio(
-            "Go to",
+            "Select page",
             [
                 "1️⃣ Upload Data",
                 "2️⃣ Configure Analysis",
@@ -132,15 +138,16 @@ def main():
         st.markdown("---")
 
         # Configuration management
-        st.subheader("💾 Configurations")
+        st.markdown("### 💾 Configuration")
 
         configs = st.session_state.config_manager.list_configs()
 
         if configs:
             config_names = [cfg.stem for cfg in configs]
-            selected_config = st.selectbox("Saved configs", [""] + config_names)
+            selected_config = st.selectbox("Saved configurations", [""] + config_names)
 
             col1, col2 = st.columns(2)
+
             with col1:
                 if selected_config and st.button("📥 Load", use_container_width=True):
                     try:
@@ -158,7 +165,7 @@ def main():
                         st.session_state.filter_config = loaded_config["filters"]
 
                         st.success(f"✅ Loaded!")
-                        time.sleep(0.5)
+                        time.sleep(1)
                         st.rerun()
                     except Exception as e:
                         st.error(f"Error: {e}")
@@ -172,12 +179,22 @@ def main():
                         )
                         st.session_state.config_manager.delete_config(config_path)
                         st.success("Deleted!")
-                        time.sleep(0.5)
+                        time.sleep(1)
                         st.rerun()
                     except Exception as e:
                         st.error(f"Error: {e}")
         else:
             st.info("No saved configurations")
+
+        st.markdown("---")
+        st.markdown("### ℹ️ About")
+        st.markdown(
+            """
+        **Version:** 1.0.0
+        **Author:** Cuong Bui
+        **Contact:** [cuong@omniumcpg.com](mailto:cuong@omniumcpg.com)
+        """
+        )
 
     # Route to pages
     if page == "1️⃣ Upload Data":
@@ -203,8 +220,8 @@ def page_upload_data():
     **Required columns:**
     - Account identifier
     - Date/time period
-    - Sales metrics (units, dollars, etc.)
-    - Categorical variables (COT, price bucket, etc.)
+    - Sales metrics (Unit_Sales, Dollar_Sales, etc.)
+    - Base metrics (Auto_Base_Units, Auto_Base_Dollars)
     """
     )
 
@@ -233,14 +250,19 @@ def page_upload_data():
                 unsafe_allow_html=True,
             )
 
-            col1, col2, col3 = st.columns(3)
+            col1, col2, col3, col4 = st.columns(4)
             with col1:
                 st.metric("📊 Total Rows", f"{len(data):,}")
             with col2:
                 st.metric("📋 Columns", len(data.columns))
             with col3:
                 if "Account" in data.columns:
-                    st.metric("🏢 Unique Accounts", data["Account"].nunique())
+                    st.metric("🏢 Accounts", data["Account"].nunique())
+            with col4:
+                if "Date" in data.columns:
+                    data["Date"] = pd.to_datetime(data["Date"])
+                    date_range = (data["Date"].max() - data["Date"].min()).days
+                    st.metric("📅 Date Range", f"{date_range} days")
 
             st.subheader("👀 Data Preview")
             st.dataframe(data.head(20), use_container_width=True)
@@ -274,7 +296,7 @@ def page_configure_analysis():
     data = st.session_state.data
     filter_config = st.session_state.get("filter_config", {})
 
-    # 1. FILTERS
+    # SECTION 1: FILTERS
     st.subheader("1️⃣ Data Filters")
 
     with st.expander("🔍 Configure Filters", expanded=True):
@@ -372,13 +394,13 @@ def page_configure_analysis():
             st.session_state.filtered_data = filtered
 
             st.session_state.filter_config = {
-                "use_lower": locals().get("use_lower", False),
+                "use_lower": use_lower if "use_lower" in locals() else False,
                 "lower_value": lower_value,
-                "use_acv": locals().get("use_acv", False),
+                "use_acv": use_acv if "use_acv" in locals() else False,
                 "acv_value": acv_value,
-                "use_cot": locals().get("use_cot", False),
+                "use_cot": use_cot if "use_cot" in locals() else False,
                 "cot_value": cot_value,
-                "use_promo": locals().get("use_promo", False),
+                "use_promo": use_promo if "use_promo" in locals() else False,
                 "promo_value": promo_value,
                 "exclude_zeros": exclude_zeros,
             }
@@ -400,48 +422,48 @@ def page_configure_analysis():
         except Exception as e:
             st.error(f"❌ Error: {e}")
 
-    # 2. MODEL CONFIGURATION
+    # SECTION 2: REGRESSION MODEL
     if st.session_state.filtered_data is not None:
-        filtered = st.session_state.filtered_data
-
         st.subheader("2️⃣ Regression Model")
 
-        with st.expander("📈 Configure Variables", expanded=True):
-            reg_config = st.session_state.get("reg_config", {})
+        filtered = st.session_state.filtered_data
+        reg_config = st.session_state.get("reg_config", {})
+
+        with st.expander("📈 Configure Model Variables", expanded=True):
+            numeric_cols = [
+                col
+                for col in filtered.columns
+                if filtered[col].dtype in ["int64", "float64"]
+            ]
+            categorical_cols = [
+                col for col in filtered.columns if filtered[col].dtype == "object"
+            ]
 
             dep_var = st.selectbox(
                 "Dependent Variable (Y)",
-                options=[
-                    col
-                    for col in filtered.columns
-                    if filtered[col].dtype in ["int64", "float64"]
-                ],
-                index=0,
-            )
-
-            continuous_options = [
-                col
-                for col in filtered.columns
-                if filtered[col].dtype in ["int64", "float64"] and col != dep_var
-            ]
-            continuous_vars = st.multiselect(
-                "Continuous Variables (log-transformed)",
-                options=continuous_options,
-                default=reg_config.get(
-                    "continuous_vars",
-                    continuous_options[:1] if continuous_options else [],
+                options=numeric_cols,
+                index=(
+                    numeric_cols.index(reg_config.get("dependent_var", numeric_cols[0]))
+                    if reg_config.get("dependent_var") in numeric_cols
+                    else 0
                 ),
             )
 
-            categorical_options = [
-                col for col in filtered.columns if filtered[col].dtype == "object"
-            ]
+            continuous_vars = st.multiselect(
+                "Continuous Variables (log-transformed)",
+                options=[col for col in numeric_cols if col != dep_var],
+                default=reg_config.get(
+                    "continuous_vars",
+                    [numeric_cols[1]] if len(numeric_cols) > 1 else [],
+                ),
+            )
+
             categorical_vars = st.multiselect(
                 "Categorical Variables (one-hot encoded)",
-                options=categorical_options,
+                options=categorical_cols,
                 default=reg_config.get(
                     "categorical_vars",
-                    ["Account"] if "Account" in categorical_options else [],
+                    ["Account"] if "Account" in categorical_cols else [],
                 ),
             )
 
@@ -454,105 +476,87 @@ def page_configure_analysis():
             "categorical_vars": categorical_vars,
         }
 
-        # 3. K-FOLD CONFIG
+        # SECTION 3: K-FOLD
         st.subheader("3️⃣ K-Fold Cross-Validation")
 
+        kfold_config = st.session_state.get("kfold_config", {})
+
         with st.expander("🔄 Configure K-Fold", expanded=True):
-            kfold_config = st.session_state.get("kfold_config", {})
+
+            # Optimal K finder
+            st.markdown("#### 🎯 Optimal K Selection")
+
+            st.info(
+                "💡 The system can automatically find the optimal number of folds by testing different values."
+            )
+
+            if st.button("🔍 Find Optimal K", use_container_width=True):
+                if continuous_vars or categorical_vars:
+                    find_optimal_k(filtered, dep_var, continuous_vars, categorical_vars)
+                else:
+                    st.error("Configure model variables first!")
+
+        # SHOW OPTIMAL K RESULTS OUTSIDE THE EXPANDER (full width)
+        if st.session_state.optimal_k is not None:
+            st.success(f"✅ Suggested optimal K: **{st.session_state.optimal_k}**")
+
+            # Plot at full width, NOT inside expander
+            fig = create_optimal_k_plot(st.session_state.optimal_k_results)
+            st.plotly_chart(fig, use_container_width=True)
+
+        # Continue with K-Fold settings inside expander
+        with st.expander("🔄 Configure K-Fold", expanded=True):
+            st.markdown("#### ⚙️ K-Fold Settings")
 
             col1, col2 = st.columns(2)
 
             with col1:
-                group_col = st.selectbox(
-                    "Time period column",
-                    options=[
-                        col
-                        for col in filtered.columns
-                        if "period" in col.lower() or "week" in col.lower()
-                    ],
-                    index=0,
+                default_k = (
+                    st.session_state.optimal_k
+                    if st.session_state.optimal_k
+                    else kfold_config.get("n_splits", 5)
+                )
+                n_splits = st.slider(
+                    "Number of folds (K)",
+                    min_value=2,
+                    max_value=10,
+                    value=default_k,
+                    help="Higher K = more robust but slower",
                 )
 
-                account_col = st.selectbox(
-                    "Account column",
-                    options=categorical_options,
-                    index=0 if "Account" in categorical_options else 0,
+                period_cols = [
+                    col
+                    for col in filtered.columns
+                    if "period" in col.lower() or "week" in col.lower()
+                ]
+                group_col = st.selectbox(
+                    "Time period column",
+                    options=period_cols if period_cols else filtered.columns,
+                    index=0,
                 )
 
             with col2:
-                # Show optimal k suggestion
-                if st.session_state.optimal_k is not None:
-                    st.markdown(
-                        f'<div class="info-box">💡 Suggested optimal k: <b>{st.session_state.optimal_k}</b></div>',
-                        unsafe_allow_html=True,
-                    )
-
-                n_splits = st.slider(
-                    "Number of folds (k)",
-                    min_value=2,
-                    max_value=10,
-                    value=(
-                        st.session_state.optimal_k
-                        if st.session_state.optimal_k
-                        else kfold_config.get("n_splits", 5)
+                account_col = st.selectbox(
+                    "Account column",
+                    options=categorical_cols,
+                    index=(
+                        categorical_cols.index("Account")
+                        if "Account" in categorical_cols
+                        else 0
                     ),
                 )
 
+                weight_options = ["None"] + [col for col in numeric_cols]
+                default_weight = kfold_config.get("weight_column", "Auto_Base_Units")
                 weight_col = st.selectbox(
                     "Weight column (optional)",
-                    options=["None"]
-                    + [
-                        col
-                        for col in filtered.columns
-                        if filtered[col].dtype in ["int64", "float64"]
-                    ],
-                    index=0,
+                    options=weight_options,
+                    index=(
+                        weight_options.index(default_weight)
+                        if default_weight in weight_options
+                        else 0
+                    ),
                 )
-
-            # Find optimal k button
-            if st.button("🎯 Find Optimal K"):
-                with st.spinner("🔍 Testing different k values..."):
-                    try:
-                        # Build temporary model
-                        temp_config = RegressionConfig(
-                            dependent_var=dep_var,
-                            continuous_vars=continuous_vars,
-                            categorical_vars=categorical_vars,
-                        )
-                        builder = RegressionPipelineBuilder(temp_config)
-                        X, y = builder.prepare_data(filtered)
-                        pipeline = builder.build()
-
-                        # Test different k values
-                        temp_kfold_config = KFoldConfig(
-                            n_splits=5,  # Will be overridden
-                            group_column=group_col,
-                            account_column=account_col,
-                            weight_column=None if weight_col == "None" else weight_col,
-                            verbose=False,
-                        )
-
-                        analyzer = KFoldAnalyzer(temp_kfold_config)
-                        optimal_k, k_results = analyzer.find_optimal_k(
-                            filtered,
-                            X,
-                            y,
-                            pipeline,
-                            k_range=range(
-                                2, min(11, filtered[group_col].nunique() + 1)
-                            ),
-                        )
-
-                        st.session_state.optimal_k = optimal_k
-
-                        st.success(f"✅ Optimal k found: {optimal_k}")
-
-                        # Show chart
-                        fig = create_optimal_k_plot(k_results)
-                        st.plotly_chart(fig, use_container_width=True)
-
-                    except Exception as e:
-                        st.error(f"❌ Error finding optimal k: {e}")
 
         st.session_state.kfold_config = {
             "n_splits": n_splits,
@@ -561,24 +565,22 @@ def page_configure_analysis():
             "weight_column": None if weight_col == "None" else weight_col,
         }
 
-        # 4. OUTLIER CONFIG
+        # SECTION 4: OUTLIER DETECTION
         st.subheader("4️⃣ Outlier Detection")
 
-        with st.expander("🎯 Configure Detection", expanded=True):
-            outlier_config = st.session_state.get("outlier_config", {})
+        outlier_config = st.session_state.get("outlier_config", {})
 
+        with st.expander("🎯 Configure Outlier Detection", expanded=True):
             col1, col2 = st.columns(2)
 
             with col1:
-                contamination = (
-                    st.slider(
-                        "Expected outlier %",
-                        min_value=1,
-                        max_value=30,
-                        value=int(outlier_config.get("contamination", 10)),
-                        help="Expected percentage of outliers",
-                    )
-                    / 100
+                contamination = st.slider(
+                    "Expected outlier proportion",
+                    min_value=0.01,
+                    max_value=0.30,
+                    value=outlier_config.get("contamination", 0.10),
+                    step=0.01,
+                    help="Expected % of outliers (Isolation Forest)",
                 )
 
                 eps_percentile = st.slider(
@@ -586,6 +588,7 @@ def page_configure_analysis():
                     min_value=50,
                     max_value=99,
                     value=outlier_config.get("eps_percentile", 90),
+                    help="Higher = larger neighborhood",
                 )
 
             with col2:
@@ -602,7 +605,8 @@ def page_configure_analysis():
                 )
 
                 use_dbcv = st.checkbox(
-                    "Use DBCV", value=outlier_config.get("use_dbcv", True)
+                    "Use DBCV for method selection",
+                    value=outlier_config.get("use_dbcv", True),
                 )
 
         st.session_state.outlier_config = {
@@ -618,10 +622,19 @@ def page_configure_analysis():
         st.subheader("💾 Save Configuration")
 
         col1, col2 = st.columns([3, 1])
+
         with col1:
             config_name = st.text_input(
-                "Configuration name", placeholder="e.g., Food_Channel_Analysis"
+                "Configuration name",
+                value="",
+                placeholder="e.g., Walmart_Food_Analysis",
             )
+            config_desc = st.text_input(
+                "Description (optional)",
+                value="",
+                placeholder="e.g., Standard analysis for Walmart food channel",
+            )
+
         with col2:
             st.write("")
             st.write("")
@@ -630,105 +643,207 @@ def page_configure_analysis():
                     try:
                         st.session_state.config_manager.save_config(
                             name=config_name,
+                            description=config_desc,
                             filters=st.session_state.filter_config,
                             regression=st.session_state.reg_config,
                             kfold=st.session_state.kfold_config,
                             outlier=st.session_state.outlier_config,
-                            description=f"Saved on {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M')}",
                         )
                         st.success(f"✅ Saved: {config_name}")
                     except Exception as e:
-                        st.error(f"❌ Error: {e}")
+                        st.error(f"Error: {e}")
                 else:
-                    st.warning("⚠️ Enter a configuration name")
+                    st.warning("Enter a configuration name")
 
         st.markdown(
-            '<div class="success-box">✅ Configuration complete! Go to Step 3 to run analysis.</div>',
+            '<div class="info-box">✅ Configuration complete! Go to Step 3 to run analysis.</div>',
             unsafe_allow_html=True,
         )
+
+
+def find_optimal_k(data, dep_var, continuous_vars, categorical_vars):
+    """Find optimal K using k-fold analysis."""
+
+    with st.spinner("🔍 Finding optimal K (testing k=2 to k=10)..."):
+        try:
+            # Build model
+            reg_config = RegressionConfig(
+                dependent_var=dep_var,
+                continuous_vars=continuous_vars,
+                categorical_vars=categorical_vars,
+            )
+
+            builder = RegressionPipelineBuilder(reg_config)
+            X, y = builder.prepare_data(data)
+            pipeline = builder.build()
+
+            # Test different K values
+            kfold_config = st.session_state.kfold_config
+            temp_config = KFoldConfig(
+                n_splits=5,
+                group_column=kfold_config["group_column"],
+                account_column=kfold_config["account_column"],
+                weight_column=kfold_config["weight_column"],
+                verbose=False,
+            )
+
+            analyzer = KFoldAnalyzer(temp_config)
+            optimal_k, k_results = analyzer.find_optimal_k(
+                data, X, y, pipeline, k_range=range(2, 11)
+            )
+
+            # STORE results in session state
+            st.session_state.optimal_k = optimal_k
+            st.session_state.optimal_k_results = k_results
+
+            # Force rerun to display outside expander
+            st.rerun()
+
+        except Exception as e:
+            st.error(f"Error finding optimal K: {e}")
+            st.exception(e)
 
 
 def page_run_analysis():
     """Page 3: Run the analysis."""
     st.header("▶️ Step 3: Run Analysis")
 
+    # Check prerequisites
     if st.session_state.filtered_data is None:
-        st.warning("⚠️ Please complete Steps 1 and 2 first")
+        st.warning("⚠️ Complete Steps 1 and 2 first")
         return
 
     if "reg_config" not in st.session_state:
-        st.warning("⚠️ Please configure the model in Step 2")
+        st.warning("⚠️ Configure the model in Step 2")
         return
 
     st.markdown(
-        '<div class="info-box">Click the button below to run the complete analysis pipeline</div>',
+        '<div class="info-box">📊 Ready to run complete analysis pipeline</div>',
         unsafe_allow_html=True,
     )
 
-    if st.button("🚀 Run Complete Analysis", type="primary", use_container_width=True):
-        try:
-            progress_bar = st.progress(0, text="Starting analysis...")
+    # Show configuration summary
+    with st.expander("📋 Configuration Summary"):
+        col1, col2 = st.columns(2)
 
-            # Step 1: Build model
-            progress_bar.progress(10, text="📊 Step 1/3: Building regression model...")
-            time.sleep(0.3)
-
-            reg_config = RegressionConfig(**st.session_state.reg_config)
-            builder = RegressionPipelineBuilder(reg_config)
-            X, y = builder.prepare_data(st.session_state.filtered_data)
-            pipeline = builder.build()
-
-            progress_bar.progress(25, text="✅ Model built successfully")
-            time.sleep(0.2)
-
-            # Step 2: K-Fold
-            progress_bar.progress(
-                30, text="🔄 Step 2/3: Running K-Fold cross-validation..."
+        with col1:
+            st.markdown("**Data:**")
+            st.write(f"- Rows: {len(st.session_state.filtered_data):,}")
+            st.write(
+                f"- Accounts: {st.session_state.filtered_data['Account'].nunique()}"
             )
 
-            kfold_config = KFoldConfig(**st.session_state.kfold_config)
-            kfold_analyzer = KFoldAnalyzer(kfold_config)
+            st.markdown("**Model:**")
+            st.write(f"- Dependent: {st.session_state.reg_config['dependent_var']}")
+            st.write(
+                f"- Continuous: {len(st.session_state.reg_config['continuous_vars'])}"
+            )
+            st.write(
+                f"- Categorical: {len(st.session_state.reg_config['categorical_vars'])}"
+            )
+
+        with col2:
+            st.markdown("**K-Fold:**")
+            st.write(f"- Folds: {st.session_state.kfold_config['n_splits']}")
+            st.write(f"- Group by: {st.session_state.kfold_config['group_column']}")
+
+            st.markdown("**Outlier Detection:**")
+            st.write(
+                f"- Contamination: {st.session_state.outlier_config['contamination']:.0%}"
+            )
+            st.write(
+                f"- DBSCAN eps: p{st.session_state.outlier_config['eps_percentile']}"
+            )
+
+    if st.button("🚀 Run Complete Analysis", type="primary", use_container_width=True):
+        run_complete_analysis()
+
+
+def run_complete_analysis():
+    """Execute the complete analysis pipeline with progress tracking."""
+
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+
+    try:
+        # STEP 1: Build Model
+        status_text.markdown("### 🔨 Step 1/3: Building regression model...")
+        progress_bar.progress(10)
+        time.sleep(0.3)
+
+        reg_config = RegressionConfig(**st.session_state.reg_config)
+        builder = RegressionPipelineBuilder(reg_config)
+        X, y = builder.prepare_data(st.session_state.filtered_data)
+        pipeline = builder.build()
+
+        progress_bar.progress(25)
+        status_text.markdown("✅ Model built successfully")
+        time.sleep(0.5)
+
+        # STEP 2: K-Fold
+        status_text.markdown("### 🔄 Step 2/3: Running K-Fold cross-validation...")
+        progress_bar.progress(30)
+
+        kfold_config = KFoldConfig(**st.session_state.kfold_config)
+        kfold_analyzer = KFoldAnalyzer(kfold_config)
+
+        # Simulate fold progress
+        with st.spinner(f"Running {kfold_config.n_splits}-fold cross-validation..."):
             kfold_results = kfold_analyzer.run(
                 st.session_state.filtered_data, X, y, pipeline
             )
 
-            st.session_state.kfold_results = kfold_results
-            progress_bar.progress(60, text="✅ K-Fold complete")
-            time.sleep(0.2)
+        st.session_state.kfold_results = kfold_results
+        progress_bar.progress(60)
+        status_text.markdown(
+            f"✅ K-Fold complete: MSE={kfold_results.mean_mse:.4f}, R²={kfold_results.mean_r2:.4f}"
+        )
+        time.sleep(0.5)
 
-            # Step 3: Outlier detection
-            progress_bar.progress(65, text="🎯 Step 3/3: Detecting outliers...")
+        # STEP 3: Outlier Detection
+        status_text.markdown("### 🎯 Step 3/3: Detecting outlier accounts...")
+        progress_bar.progress(65)
 
-            outlier_config = OutlierConfig(**st.session_state.outlier_config)
-            outlier_analyzer = OutlierAnalyzer(outlier_config)
+        outlier_config = OutlierConfig(**st.session_state.outlier_config)
+        outlier_analyzer = OutlierAnalyzer(outlier_config)
+
+        with st.spinner("Running outlier detection algorithms..."):
             outlier_results = outlier_analyzer.detect(
                 accounts=kfold_results.get_all_accounts(),
                 residuals=kfold_results.get_all_residuals(),
                 weights=kfold_results.get_all_weights(),
             )
 
-            st.session_state.outlier_results = outlier_results
-            progress_bar.progress(100, text="✅ Analysis complete!")
-            time.sleep(0.3)
+        st.session_state.outlier_results = outlier_results
+        progress_bar.progress(100)
+        status_text.markdown("✅ Outlier detection complete!")
 
-            st.markdown(
-                '<div class="success-box">🎉 Analysis Complete!</div>',
-                unsafe_allow_html=True,
-            )
+        # Show summary
+        time.sleep(0.5)
+        st.balloons()
 
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.metric("📈 Mean R²", f"{kfold_results.mean_r2:.4f}")
-            with col2:
-                st.metric("📉 Mean MSE", f"{kfold_results.mean_mse:.4f}")
-            with col3:
-                st.metric("🎯 Outliers", outlier_results.n_outliers)
+        st.markdown(
+            '<div class="success-box"><h3>🎉 Analysis Complete!</h3></div>',
+            unsafe_allow_html=True,
+        )
 
-            st.info("👉 Go to Step 4 to view detailed results")
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("📊 Mean R²", f"{kfold_results.mean_r2:.4f}")
+        with col2:
+            st.metric("📉 Mean MSE", f"{kfold_results.mean_mse:.4f}")
+        with col3:
+            st.metric("🎯 Outliers", outlier_results.n_outliers)
+        with col4:
+            st.metric("📈 Outlier Rate", f"{outlier_results.outlier_rate*100:.1f}%")
 
-        except Exception as e:
-            st.error(f"❌ Error during analysis: {e}")
-            st.exception(e)
+        st.info("👉 Go to **Step 4** to view detailed results and visualizations")
+
+    except Exception as e:
+        progress_bar.empty()
+        status_text.empty()
+        st.error(f"❌ Error during analysis: {e}")
+        st.exception(e)
 
 
 def page_view_results():
@@ -736,14 +851,15 @@ def page_view_results():
     st.header("📊 Step 4: View Results")
 
     if st.session_state.outlier_results is None:
-        st.warning("⚠️ Please run the analysis first (Step 3)")
+        st.warning("⚠️ Run the analysis first (Step 3)")
         return
 
     results = st.session_state.outlier_results
     kfold_results = st.session_state.kfold_results
 
+    # Tabs
     tab1, tab2, tab3, tab4 = st.tabs(
-        ["📈 Overview", "🎯 Outliers", "📊 3D Plot", "💾 Export"]
+        ["📈 Overview", "🎯 Outliers", "📊 3D Visualization", "💾 Export"]
     )
 
     with tab1:
@@ -751,13 +867,13 @@ def page_view_results():
 
         col1, col2, col3, col4 = st.columns(4)
         with col1:
-            st.metric("🏢 Total Accounts", results.n_accounts)
+            st.metric("Total Accounts", results.n_accounts)
         with col2:
-            st.metric("🎯 Outliers", results.n_outliers)
+            st.metric("Outliers Found", results.n_outliers)
         with col3:
-            st.metric("📊 Outlier Rate", f"{results.outlier_rate*100:.1f}%")
+            st.metric("Outlier Rate", f"{results.outlier_rate*100:.1f}%")
         with col4:
-            st.metric("🔍 Method", results.density_method)
+            st.metric("Method Used", results.density_method)
 
         st.subheader("K-Fold Results")
         fold_summary = kfold_results.get_fold_summary()
@@ -765,6 +881,11 @@ def page_view_results():
 
         fig_mse = create_fold_mse_comparison(kfold_results)
         st.plotly_chart(fig_mse, use_container_width=True)
+
+        if st.session_state.get("optimal_k_results") is not None:
+            st.subheader("Optimal K Analysis")
+            fig_k = create_optimal_k_plot(st.session_state.optimal_k_results)
+            st.plotly_chart(fig_k, use_container_width=True)
 
     with tab2:
         st.subheader("Detected Outlier Accounts")
@@ -786,163 +907,395 @@ def page_view_results():
 
         st.dataframe(summary, use_container_width=True, height=400)
 
-        # Account drill-down
-        st.subheader("📋 Account Details")
-        selected_account = st.selectbox(
-            "Select account", options=[""] + list(summary["Account"].unique())
-        )
-
-        if selected_account:
-            account_stats = summary[summary["Account"] == selected_account].iloc[0]
-
-            col1, col2, col3, col4 = st.columns(4)
-            with col1:
-                st.metric("Type", account_stats["Outlier_Type"])
-            with col2:
-                st.metric("Mean Residual", f"{account_stats['w_mean_residual']:.4f}")
-            with col3:
-                st.metric("Std Residual", f"{account_stats['w_std_residual']:.4f}")
-            with col4:
-                st.metric("Observations", int(account_stats["count"]))
-
-            st.info("💡 View detailed charts in Step 5: Account Charts")
-
         # Type breakdown
-        st.subheader("📊 Outlier Type Breakdown")
-        type_counts = summary["Outlier_Type"].value_counts()
+        st.subheader("Outlier Type Breakdown")
+        type_counts = results.agg_data[results.agg_data["outlier_flag"] == 1][
+            "outlier_type"
+        ].value_counts()
         st.bar_chart(type_counts)
 
     with tab3:
-        st.subheader("🎨 3D Interactive Visualization")
-        st.info("💡 Use the dropdowns in the plot to change axes")
+        st.subheader("3D Interactive Visualization")
+
+        st.markdown(
+            """
+        **How to use:**
+        - 🖱️ Click and drag to rotate
+        - 🔍 Scroll to zoom
+        - 📊 Use dropdowns to change axes
+        - 🎨 Colors indicate outlier type
+        """
+        )
 
         fig_3d = create_interactive_3d_plot(results.agg_data)
-        st.plotly_chart(fig_3d, use_container_width=True)
+        st.plotly_chart(
+            fig_3d, use_container_width=True, config={"displayModeBar": True}
+        )
 
     with tab4:
-        st.subheader("💾 Export Results")
+        st.subheader("Export Results")
 
-        col1, col2, col3 = st.columns(3)
+        col1, col2 = st.columns(2)
 
         with col1:
-            csv = results.get_outlier_summary().to_csv(index=False)
+            st.markdown("#### 📥 Data Exports")
+
+            # Outlier summary
+            csv1 = results.get_outlier_summary().to_csv(index=False)
             st.download_button(
-                label="📥 Outlier Summary",
-                data=csv,
+                "📄 Outlier Summary (CSV)",
+                data=csv1,
                 file_name="outlier_summary.csv",
                 mime="text/csv",
                 use_container_width=True,
             )
 
-        with col2:
-            csv_full = results.agg_data.to_csv(index=False)
+            # Full results
+            csv2 = results.agg_data.to_csv(index=False)
             st.download_button(
-                label="📥 Full Results",
-                data=csv_full,
-                file_name="full_results.csv",
+                "📄 Full Results (CSV)",
+                data=csv2,
+                file_name="full_analysis_results.csv",
                 mime="text/csv",
                 use_container_width=True,
             )
 
-        with col3:
-            csv_kfold = kfold_results.to_dataframe().to_csv(index=False)
+            # K-Fold results
+            csv3 = kfold_results.to_dataframe().to_csv(index=False)
             st.download_button(
-                label="📥 K-Fold Results",
-                data=csv_kfold,
+                "📄 K-Fold Details (CSV)",
+                data=csv3,
                 file_name="kfold_results.csv",
                 mime="text/csv",
+                use_container_width=True,
+            )
+
+        with col2:
+            st.markdown("#### 📊 Visualization Exports")
+
+            st.info("💡 Right-click on any chart and select 'Save as PNG' to export")
+
+            # Export 3D plot as HTML
+            fig_3d = create_interactive_3d_plot(results.agg_data)
+            html_str = fig_3d.to_html()
+            st.download_button(
+                "🌐 3D Plot (Interactive HTML)",
+                data=html_str,
+                file_name="3d_outlier_plot.html",
+                mime="text/html",
                 use_container_width=True,
             )
 
 
 def page_account_charts():
     """Page 5: View account time series charts."""
-    st.header("📈 Step 5: Account Charts")
+    st.header("📈 Step 5: Account Time Series Charts")
 
     if st.session_state.filtered_data is None:
-        st.warning("⚠️ Please complete Steps 1-3 first")
+        st.warning("⚠️ Upload and filter data first")
         return
 
     data = st.session_state.filtered_data
 
-    # Get account list
-    all_accounts = sorted(data["Account"].unique())
+    # Get list of accounts
+    accounts = sorted(data["Account"].unique())
 
-    # Filter options
-    col1, col2 = st.columns([2, 1])
+    st.markdown(f"**Total Accounts:** {len(accounts)}")
+
+    # Debug panel
+    with st.expander("🔍 Debug: Show Column Names"):
+        diagnose_data_columns(data)
+
+    # Configuration in sidebar or top section
+    st.markdown("---")
+
+    col1, col2, col3 = st.columns(3)
 
     with col1:
-        if st.session_state.outlier_results is not None:
-            show_option = st.radio(
-                "Show",
-                ["All Accounts", "Outliers Only", "Normal Accounts Only"],
-                horizontal=True,
-            )
+        chart_mode = st.selectbox(
+            "View mode", ["Single Account", "All Outliers", "All Accounts"]
+        )
 
-            if show_option == "Outliers Only":
-                accounts_to_show = (
-                    st.session_state.outlier_results.get_outlier_accounts()
-                )
-            elif show_option == "Normal Accounts Only":
+    with col2:
+        if chart_mode == "Single Account":
+            selected_account = st.selectbox("Select account", accounts)
+            st.session_state.selected_account = selected_account
+        elif chart_mode == "All Outliers":
+            if st.session_state.outlier_results:
                 outlier_accounts = (
                     st.session_state.outlier_results.get_outlier_accounts()
                 )
-                accounts_to_show = [
-                    acc for acc in all_accounts if acc not in outlier_accounts
-                ]
+                st.info(f"{len(outlier_accounts)} outlier accounts")
             else:
-                accounts_to_show = all_accounts
-        else:
-            accounts_to_show = all_accounts
-            st.info("Run analysis first to filter by outliers")
+                st.warning("Run analysis first")
+                return
+        else:  # All Accounts
+            max_charts = st.number_input(
+                "Max charts", min_value=1, max_value=100, value=20
+            )
+            st.session_state.max_charts = max_charts
 
-    with col2:
-        max_charts = st.number_input(
-            "Max charts to display",
-            min_value=1,
-            max_value=100,
-            value=min(20, len(accounts_to_show)),
-            help="Limit to avoid performance issues",
-        )
+    with col3:
+        if st.button("📊 Generate Charts", type="primary", use_container_width=True):
+            st.session_state.chart_mode = chart_mode
 
-    st.markdown(
-        f"**Showing {min(max_charts, len(accounts_to_show))} of {len(accounts_to_show)} accounts**"
-    )
+    # Display charts at FULL WIDTH (not in columns)
+    if st.session_state.get("chart_mode"):
+        st.markdown("---")
+        display_charts(data, st.session_state.chart_mode, accounts)
+
+
+def display_charts(data, chart_mode, accounts):
+    """Display account charts at full width."""
 
     # Get date range for consistency
     data["Date"] = pd.to_datetime(data["Date"])
     date_range = (data["Date"].min(), data["Date"].max())
 
-    # Generate charts
-    if st.button("📊 Generate Charts", type="primary"):
-        with st.spinner(
-            f"🎨 Creating {min(max_charts, len(accounts_to_show))} charts..."
-        ):
-            for i, account in enumerate(accounts_to_show[:max_charts]):
-                with st.container():
-                    # Show outlier badge if applicable
-                    if st.session_state.outlier_results is not None:
-                        outlier_accounts = (
-                            st.session_state.outlier_results.get_outlier_accounts()
-                        )
-                        if account in outlier_accounts:
-                            outlier_data = st.session_state.outlier_results.agg_data[
-                                st.session_state.outlier_results.agg_data["Account"]
-                                == account
-                            ]
-                            outlier_type = outlier_data["outlier_type"].values[0]
-                            st.markdown(
-                                f"### 🚨 {account} - **OUTLIER** ({outlier_type})"
-                            )
-                        else:
-                            st.markdown(f"### ✅ {account}")
-                    else:
-                        st.markdown(f"### {account}")
+    if chart_mode == "Single Account":
+        selected_account = st.session_state.get("selected_account")
 
-                    fig = create_account_time_series(data, account, date_range)
-                    st.plotly_chart(fig, use_container_width=True)
+        if selected_account:
+            st.subheader(f"📊 {selected_account}")
 
+            # Create chart at FULL WIDTH
+            fig = create_account_time_series(data, selected_account, date_range)
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.error("No account selected")
+
+    elif chart_mode == "All Outliers":
+        outlier_accounts = st.session_state.outlier_results.get_outlier_accounts()
+
+        st.markdown(f"### Showing {len(outlier_accounts)} Outlier Accounts")
+        st.markdown("---")
+
+        for i, account in enumerate(outlier_accounts):
+            # Show header
+            st.markdown(f"#### 📊 {account}")
+
+            # Chart at full width
+            fig = create_account_time_series(data, account, date_range)
+            st.plotly_chart(fig, use_container_width=True)
+
+            # Separator
+            if i < len(outlier_accounts) - 1:
+                st.markdown("---")
+
+    else:  # All Accounts
+        max_charts = st.session_state.get("max_charts", 20)
+
+        st.markdown(
+            f"### Showing {min(max_charts, len(accounts))} of {len(accounts)} Accounts"
+        )
+        st.markdown("---")
+
+        progress = st.progress(0)
+        chart_container = st.container()
+
+        with chart_container:
+            for i, account in enumerate(accounts[:max_charts]):
+                # Show header
+                st.markdown(f"#### 📊 {account}")
+
+                # Chart at full width
+                fig = create_account_time_series(data, account, date_range)
+                st.plotly_chart(fig, use_container_width=True)
+
+                # Update progress
+                progress.progress((i + 1) / min(max_charts, len(accounts)))
+
+                # Separator
+                if i < min(max_charts, len(accounts)) - 1:
                     st.markdown("---")
+
+        progress.empty()
+
+    st.success(f"✅ Charts displayed successfully")
+
+
+def generate_charts(data, chart_mode, accounts):
+    """Generate account charts based on selected mode."""
+
+    # Get date range for consistency
+    data["Date"] = pd.to_datetime(data["Date"])
+    date_range = (data["Date"].min(), data["Date"].max())
+
+    with st.spinner("Generating charts..."):
+
+        if chart_mode == "Single Account":
+            # GET the stored selection
+            selected_account = st.session_state.get("selected_account")
+
+            if selected_account:
+                st.subheader(f"📊 {selected_account}")
+                fig = create_account_time_series(data, selected_account, date_range)
+                st.plotly_chart(
+                    fig, use_container_width=True, key=f"chart_{selected_account}"
+                )
+            else:
+                st.error("No account selected")
+
+        elif chart_mode == "All Outliers":
+            outlier_accounts = st.session_state.outlier_results.get_outlier_accounts()
+
+            st.markdown(f"### Showing {len(outlier_accounts)} Outlier Accounts")
+
+            for i, account in enumerate(outlier_accounts):
+                with st.expander(f"📊 {account}", expanded=(i < 3)):
+                    fig = create_account_time_series(data, account, date_range)
+                    st.plotly_chart(
+                        fig, use_container_width=True, key=f"chart_{account}_{i}"
+                    )
+
+        else:  # All Accounts
+            max_charts = st.session_state.get("max_charts", 20)
+
+            st.markdown(
+                f"### Showing {min(max_charts, len(accounts))} of {len(accounts)} Accounts"
+            )
+
+            progress = st.progress(0)
+
+            for i, account in enumerate(accounts[:max_charts]):
+                with st.expander(f"📊 {account}", expanded=False):
+                    fig = create_account_time_series(data, account, date_range)
+                    st.plotly_chart(
+                        fig, use_container_width=True, key=f"chart_{account}_{i}"
+                    )
+
+                progress.progress((i + 1) / min(max_charts, len(accounts)))
+
+            progress.empty()
+
+    st.success(f"✅ Charts generated successfully")
+
+
+def diagnose_data_columns(data):
+    """Helper function to diagnose available columns."""
+    st.markdown("### 🔍 Data Column Diagnosis")
+
+    st.markdown("#### All Available Columns:")
+
+    # Show columns in categories
+    unit_cols = [col for col in data.columns if "unit" in col.lower()]
+    dollar_cols = [col for col in data.columns if "dollar" in col.lower()]
+    base_cols = [col for col in data.columns if "base" in col.lower()]
+
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        st.markdown("**Unit Columns:**")
+        for col in unit_cols:
+            st.write(f"- `{col}`")
+
+    with col2:
+        st.markdown("**Dollar Columns:**")
+        for col in dollar_cols:
+            st.write(f"- `{col}`")
+
+    with col3:
+        st.markdown("**Base Columns:**")
+        for col in base_cols:
+            st.write(f"- `{col}`")
+
+    st.markdown("#### Sample Data for First Account:")
+
+    if "Account" in data.columns:
+        sample_account = data["Account"].iloc[0]
+        sample_data = data[data["Account"] == sample_account].head(5).copy()
+
+        # Show key columns
+        key_cols = ["Date", "Account"]
+
+        # Add unit/sales columns
+        for col in data.columns:
+            if any(
+                keyword in col.lower()
+                for keyword in [
+                    "unit_sales",
+                    "auto_base_units",
+                    "dollar_sales",
+                    "auto_base_dollars",
+                ]
+            ):
+                if col not in key_cols:
+                    key_cols.append(col)
+
+        available_cols = [col for col in key_cols if col in sample_data.columns]
+
+        if available_cols:
+            st.dataframe(sample_data[available_cols], use_container_width=True)
+
+            # VALUE COMPARISON
+            st.markdown("#### 🔍 Value Comparison:")
+
+            # Find the EXACT columns that will be used in the chart
+            unit_sales_col = None
+            for col in ["Unit_Sales", "UnitSales", "Unit Sales"]:
+                if col in sample_data.columns:
+                    unit_sales_col = col
+                    break
+
+            if not unit_sales_col:
+                for col in sample_data.columns:
+                    col_lower = col.lower()
+                    if (
+                        "unit" in col_lower
+                        and "sale" in col_lower
+                        and "base" not in col_lower
+                        and "any_merch" not in col_lower
+                        and "year_ago" not in col_lower
+                    ):
+                        unit_sales_col = col
+                        break
+
+            base_units_col = None
+            for col in ["Auto_Base_Units", "Base_Units", "BaseUnits", "Base Units"]:
+                if col in sample_data.columns:
+                    base_units_col = col
+                    break
+
+            st.markdown(f"**Chart will use:**")
+            st.markdown(f"- Unit Sales: `{unit_sales_col}`")
+            st.markdown(f"- Base Units: `{base_units_col}`")
+
+            if unit_sales_col and base_units_col:
+                comparison = pd.DataFrame(
+                    {
+                        "Metric": ["Min", "Max", "Mean", "Sum"],
+                        unit_sales_col: [
+                            sample_data[unit_sales_col].min(),
+                            sample_data[unit_sales_col].max(),
+                            sample_data[unit_sales_col].mean(),
+                            sample_data[unit_sales_col].sum(),
+                        ],
+                        base_units_col: [
+                            sample_data[base_units_col].min(),
+                            sample_data[base_units_col].max(),
+                            sample_data[base_units_col].mean(),
+                            sample_data[base_units_col].sum(),
+                        ],
+                    }
+                )
+                st.dataframe(comparison, use_container_width=True)
+
+                # Check if they're identical
+                if sample_data[unit_sales_col].equals(sample_data[base_units_col]):
+                    st.error("⚠️ WARNING: These columns have IDENTICAL values!")
+                else:
+                    st.success("✅ Unit_Sales and Base_Units have different values")
+
+                    # Show difference percentage
+                    diff_pct = (
+                        abs(
+                            sample_data[unit_sales_col].sum()
+                            - sample_data[base_units_col].sum()
+                        )
+                        / sample_data[unit_sales_col].sum()
+                        * 100
+                    )
+                    st.info(f"📊 Difference: {diff_pct:.1f}%")
 
 
 if __name__ == "__main__":

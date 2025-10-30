@@ -389,17 +389,29 @@ def create_account_time_series(
     date_range: Optional[tuple] = None,
     title: Optional[str] = None,
 ) -> go.Figure:
-    """Create time series chart for a single account."""
-    import logging
+    """
+    Create time series chart for a single account matching the reference style.
 
+    Shows:
+    - Primary axis: Unit Sales and Base Units (both lines)
+    - Secondary axis: Average Price and Average Base Price (both lines)
+
+    Args:
+        data: DataFrame with account data
+        account: Account name to plot
+        date_range: Optional tuple of (min_date, max_date) for consistent x-axis
+        title: Optional custom title
+
+    Returns:
+        Plotly Figure
+    """
     from plotly.subplots import make_subplots
-
-    logger = logging.getLogger(__name__)
 
     # Filter to this account
     account_data = data[data["Account"] == account].copy()
 
     if len(account_data) == 0:
+        # Return empty figure with message
         fig = go.Figure()
         fig.add_annotation(
             text=f"No data available for account: {account}",
@@ -416,162 +428,71 @@ def create_account_time_series(
     account_data["Date"] = pd.to_datetime(account_data["Date"])
     account_data = account_data.sort_values("Date")
 
-    # PRIORITY-BASED COLUMN FINDING
-    # Find Unit_Sales (prioritize exact match, exclude "Any_Merch" and "Year_Ago")
-    unit_sales_col = None
-    for col in ["Unit_Sales", "UnitSales", "Unit Sales"]:
-        if col in account_data.columns:
-            unit_sales_col = col
-            break
+    # Calculate average prices
+    account_data["Avg_Price"] = (
+        account_data["Dollar_Sales"] / account_data["Unit_Sales"]
+    ).replace([np.inf, -np.inf], np.nan)
 
-    # If not found, search flexibly but exclude unwanted patterns
-    if not unit_sales_col:
-        for col in account_data.columns:
-            col_lower = col.lower()
-            if (
-                "unit" in col_lower
-                and "sale" in col_lower
-                and "base" not in col_lower
-                and "any_merch" not in col_lower
-                and "year_ago" not in col_lower
-            ):
-                unit_sales_col = col
-                break
+    account_data["Avg_Base_Price"] = (
+        account_data["Auto_Base_Dollars"] / account_data["Auto_Base_Units"]
+    ).replace([np.inf, -np.inf], np.nan)
 
-    # Find Auto_Base_Units (Pratyush values) - PRIORITY
-    base_units_col = None
-    for col in ["Auto_Base_Units", "Base_Units", "BaseUnits", "Base Units"]:
-        if col in account_data.columns:
-            base_units_col = col
-            break
-
-    # Find Dollar_Sales (exclude Any_Merch and Year_Ago)
-    dollar_sales_col = None
-    for col in ["Dollar_Sales", "DollarSales", "Dollar Sales"]:
-        if col in account_data.columns:
-            dollar_sales_col = col
-            break
-
-    if not dollar_sales_col:
-        for col in account_data.columns:
-            col_lower = col.lower()
-            if (
-                "dollar" in col_lower
-                and "sale" in col_lower
-                and "base" not in col_lower
-                and "any_merch" not in col_lower
-                and "year_ago" not in col_lower
-            ):
-                dollar_sales_col = col
-                break
-
-    # Find Auto_Base_Dollars (Pratyush values) - PRIORITY
-    base_dollars_col = None
-    for col in ["Auto_Base_Dollars", "Base_Dollars", "BaseDollars", "Base Dollars"]:
-        if col in account_data.columns:
-            base_dollars_col = col
-            break
-
-    # Log what we found for debugging
-    logger.info(f"Chart for {account}:")
-    logger.info(f"  Unit Sales: {unit_sales_col}")
-    logger.info(f"  Base Units: {base_units_col}")
-    logger.info(f"  Dollar Sales: {dollar_sales_col}")
-    logger.info(f"  Base Dollars: {base_dollars_col}")
-
-    # Print to Streamlit logs (visible in terminal)
-    print(f"\n=== Chart Debug for {account} ===")
-    print(f"Unit Sales Col: {unit_sales_col}")
-    print(f"Base Units Col: {base_units_col}")
-    if unit_sales_col and base_units_col:
-        print(f"Sample Unit_Sales: {account_data[unit_sales_col].head(2).tolist()}")
-        print(f"Sample Base_Units: {account_data[base_units_col].head(2).tolist()}")
-    print("=" * 40)
-
-    # Calculate prices
-    account_data["Avg_Price"] = np.nan
-    account_data["Avg_Base_Price"] = np.nan
-
-    if unit_sales_col and dollar_sales_col:
-        # Avoid division by zero
-        mask = account_data[unit_sales_col] > 0
-        account_data.loc[mask, "Avg_Price"] = (
-            account_data.loc[mask, dollar_sales_col]
-            / account_data.loc[mask, unit_sales_col]
-        )
-
-    if base_units_col and base_dollars_col:
-        # Avoid division by zero
-        mask = account_data[base_units_col] > 0
-        account_data.loc[mask, "Avg_Base_Price"] = (
-            account_data.loc[mask, base_dollars_col]
-            / account_data.loc[mask, base_units_col]
-        )
-
-    # Create figure
+    # Create figure with secondary y-axis
     fig = make_subplots(specs=[[{"secondary_y": True}]])
 
-    # UNIT SALES - Teal solid line
-    if unit_sales_col:
-        fig.add_trace(
-            go.Scatter(
-                x=account_data["Date"],
-                y=account_data[unit_sales_col],
-                name=f"Unit Sales ({unit_sales_col})",
-                line=dict(color="#008B8B", width=3),
-                mode="lines",
-                hovertemplate="%{x|%Y-%m-%d}<br>Unit Sales: %{y:,.0f}<extra></extra>",
-            ),
-            secondary_y=False,
-        )
+    # Primary axis: Unit Sales (teal line)
+    fig.add_trace(
+        go.Scatter(
+            x=account_data["Date"],
+            y=account_data["Unit_Sales"],
+            name="Unit Sales",
+            line=dict(color="#008080", width=2),
+            mode="lines",
+        ),
+        secondary_y=False,
+    )
 
-    # BASE UNITS - Orange solid line
-    if base_units_col:
-        fig.add_trace(
-            go.Scatter(
-                x=account_data["Date"],
-                y=account_data[base_units_col],
-                name=f"Base Units ({base_units_col})",
-                line=dict(color="#FF8C00", width=3),
-                mode="lines",
-                hovertemplate="%{x|%Y-%m-%d}<br>Base Units: %{y:,.0f}<extra></extra>",
-            ),
-            secondary_y=False,
-        )
+    # Primary axis: Base Units (orange line)
+    fig.add_trace(
+        go.Scatter(
+            x=account_data["Date"],
+            y=account_data["Auto_Base_Units"],
+            name="Base Units",
+            line=dict(color="#FF8C00", width=2),
+            mode="lines",
+        ),
+        secondary_y=False,
+    )
 
-    # AVERAGE PRICE - Teal dotted line
-    if not account_data["Avg_Price"].isna().all():
-        fig.add_trace(
-            go.Scatter(
-                x=account_data["Date"],
-                y=account_data["Avg_Price"],
-                name="Average Price",
-                line=dict(color="#008B8B", width=1.5, dash="dot"),
-                mode="lines",
-                hovertemplate="%{x|%Y-%m-%d}<br>Avg Price: $%{y:.2f}<extra></extra>",
-            ),
-            secondary_y=True,
-        )
+    # Secondary axis: Average Price (teal line, thinner)
+    fig.add_trace(
+        go.Scatter(
+            x=account_data["Date"],
+            y=account_data["Avg_Price"],
+            name="Average Price",
+            line=dict(color="#008080", width=1.5, dash="dot"),
+            mode="lines",
+        ),
+        secondary_y=True,
+    )
 
-    # AVERAGE BASE PRICE - Orange dotted line
-    if not account_data["Avg_Base_Price"].isna().all():
-        fig.add_trace(
-            go.Scatter(
-                x=account_data["Date"],
-                y=account_data["Avg_Base_Price"],
-                name="Average Base Price",
-                line=dict(color="#FF8C00", width=1.5, dash="dot"),
-                mode="lines",
-                hovertemplate="%{x|%Y-%m-%d}<br>Avg Base Price: $%{y:.2f}<extra></extra>",
-            ),
-            secondary_y=True,
-        )
+    # Secondary axis: Average Base Price (orange line, thinner)
+    fig.add_trace(
+        go.Scatter(
+            x=account_data["Date"],
+            y=account_data["Avg_Base_Price"],
+            name="Average Base Price",
+            line=dict(color="#FF8C00", width=1.5, dash="dot"),
+            mode="lines",
+        ),
+        secondary_y=True,
+    )
 
-    # Set consistent date range
+    # Set x-axis range if provided (for consistency across accounts)
     if date_range:
-        fig.update_xaxes(range=[date_range[0], date_range[1]])
+        fig.update_xaxes(range=date_range)
 
-    # Style axes
+    # Update axes
     fig.update_xaxes(title_text="Date", showgrid=True, gridcolor="lightgray")
 
     fig.update_yaxes(
@@ -579,36 +500,25 @@ def create_account_time_series(
         secondary_y=False,
         showgrid=True,
         gridcolor="lightgray",
-        rangemode="tozero",
+        rangemode="tozero",  # Start from 0
     )
 
     fig.update_yaxes(
         title_text="Price ($)",
         secondary_y=True,
         showgrid=False,
-        rangemode="tozero",
+        rangemode="tozero",  # Start from 0
         tickprefix="$",
-        tickformat=".2f",
     )
 
-    # Layout
+    # Update layout
     fig.update_layout(
         title=title or f"Sales & Price Trends - {account}",
-        height=600,
+        height=500,
         hovermode="x unified",
-        legend=dict(
-            orientation="h",
-            yanchor="bottom",
-            y=1.02,
-            xanchor="left",
-            x=0,
-            bgcolor="rgba(255,255,255,0.9)",
-            bordercolor="gray",
-            borderwidth=1,
-        ),
+        legend=dict(orientation="v", yanchor="top", y=1, xanchor="right", x=1.15),
         plot_bgcolor="white",
         paper_bgcolor="white",
-        margin=dict(l=80, r=80, t=100, b=80),
     )
 
     return fig
