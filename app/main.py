@@ -424,6 +424,7 @@ def page_configure_analysis():
                         else 0
                     ),
                     format_func=lambda x: f"{x} weeks",
+                    key="period_weeks_selector",
                 )
 
                 st.session_state.period_weeks = period_weeks
@@ -437,151 +438,139 @@ def page_configure_analysis():
         )
         st.success(f"📊 {selected_option['message']}")
 
-        # Preview on FULL data
-        with st.expander("👁️ Preview Period Distribution (Full Data)"):
-            preview_data = create_equal_periods(
-                data,
-                date_column="Date",
-                period_weeks=period_weeks,
-                period_column_name="_preview_period",
+        # Preview: Show CALENDAR BOUNDARIES (not data distribution)
+        with st.expander("📅 Period Calendar Boundaries"):
+            st.markdown(
+                f"""
+            The date range will be divided into **{period_weeks}-week periods** based on calendar time.
+
+            Each period contains exactly **{period_weeks * 7} days** ({period_weeks} weeks).
+            """
             )
 
-            period_summary = []
-            for period in sorted(preview_data["_preview_period"].unique()):
-                period_data = preview_data[preview_data["_preview_period"] == period]
+            # Calculate boundaries
+            min_date = pd.to_datetime(data["Date"].min())
+            max_date = pd.to_datetime(data["Date"].max())
+            period_days = period_weeks * 7
 
-                period_min = period_data["Date"].min()
-                period_max = period_data["Date"].max()
+            boundaries = []
+            current_date = min_date
+            period_num = 1
 
-                # Calculate actual span (may differ from target if data has gaps)
-                days_span = (period_max - period_min).days + 1
-                weeks_span = days_span / 7
+            while current_date <= max_date:
+                next_date = current_date + pd.Timedelta(days=period_days)
+                end_date = min(next_date - pd.Timedelta(days=1), max_date)
 
-                # Calculate expected span
-                expected_days = period_weeks * 7
-                expected_weeks = period_weeks
+                actual_days = (end_date - current_date).days + 1
 
-                period_summary.append(
+                boundaries.append(
                     {
-                        "Period": period,
-                        "Start_Date": period_min,
-                        "End_Date": period_max,
-                        "Num_Records": len(period_data),
-                        "Actual_Days": days_span,
-                        "Actual_Weeks": round(weeks_span, 1),
-                        "Target_Weeks": expected_weeks,
-                        "Has_Gaps": "⚠️" if weeks_span < expected_weeks * 0.9 else "✓",
+                        "Period": period_num,
+                        "Start_Date": current_date.strftime("%Y-%m-%d"),
+                        "End_Date": end_date.strftime("%Y-%m-%d"),
+                        "Days": actual_days,
+                        "Weeks": round(actual_days / 7, 1),
                     }
                 )
 
-            summary_df = pd.DataFrame(period_summary)
+                current_date = next_date
+                period_num += 1
 
-            # Color code the display
-            st.dataframe(
-                summary_df.style.applymap(
-                    lambda x: "background-color: #ffcccc" if x == "⚠️" else "",
-                    subset=["Has_Gaps"],
-                ),
-                use_container_width=True,
-            )
+                # Safety: don't create infinite loops
+                if period_num > 100:
+                    break
 
-            # Show statistics
-            col1, col2, col3, col4 = st.columns(4)
-            with col1:
-                st.metric("Total Periods", len(summary_df))
-            with col2:
-                st.metric(
-                    "Avg Weeks/Period", f"{summary_df['Actual_Weeks'].mean():.1f}"
-                )
-            with col3:
-                st.metric("Target Weeks", period_weeks)
-            with col4:
-                periods_with_gaps = (summary_df["Has_Gaps"] == "⚠️").sum()
-                st.metric("Periods with Gaps", periods_with_gaps)
+            boundary_df = pd.DataFrame(boundaries)
+            st.dataframe(boundary_df, use_container_width=True, height=300)
 
-            if periods_with_gaps > 0:
-                st.warning(
-                    f"⚠️ {periods_with_gaps} period(s) appear shorter than {period_weeks} weeks. "
-                    f"This happens when:\n"
-                    f"- Your data has missing dates/weeks\n"
-                    f"- The last period doesn't contain a full {period_weeks} weeks\n"
-                    f"- There are gaps in your time series data"
-                )
-
-    # APPLY FILTERS BUTTON (NOW CREATES PERIODS FIRST)
-    if st.button("✅ Apply Time Periods & Filters", type="primary"):
-        show_loading_animation("🔄 Creating time periods on full dataset...", 0.3)
-
-        try:
-            # STEP 1: Create periods on FULL data
-            data_with_periods = create_equal_periods(
-                data,
-                date_column="Date",
-                period_weeks=st.session_state.period_weeks,
-                period_column_name="_Auto_Time_Period",
-            )
-
-            st.success(
-                f"✅ Created {data_with_periods['_Auto_Time_Period'].nunique()} time periods"
-            )
-
-            # STEP 2: Apply filters
-            show_loading_animation("🔄 Applying filters...", 0.3)
-
-            filtered = apply_filters(
-                data_with_periods,  # Filter data that already has periods
-                lower=lower_value,
-                cot=cot_value,
-                acv_threshold=acv_value,
-                auto_promo_code=promo_value,
-                exclude_zero_sales=exclude_zeros,
-            )
-
-            st.session_state.filtered_data = filtered
-
-            # Save filter config
-            st.session_state.filter_config = {
-                "use_lower": use_lower if "use_lower" in locals() else False,
-                "lower_value": lower_value,
-                "use_acv": use_acv if "use_acv" in locals() else False,
-                "acv_value": acv_value,
-                "use_cot": use_cot if "use_cot" in locals() else False,
-                "cot_value": cot_value,
-                "use_promo": use_promo if "use_promo" in locals() else False,
-                "promo_value": promo_value,
-                "exclude_zeros": exclude_zeros,
-            }
-
-            summary = get_filter_summary(data_with_periods, filtered)
-
-            st.markdown(
-                f'<div class="success-box">✅ Filtered to {len(filtered):,} rows ({summary["percent_removed"]:.1f}% removed)</div>',
-                unsafe_allow_html=True,
-            )
-
-            # Show period distribution AFTER filtering
-            st.markdown("#### 📊 Period Distribution After Filtering")
-
-            period_dist = (
-                filtered.groupby("_Auto_Time_Period").size().reset_index(name="Records")
-            )
-
+            # Summary metrics
             col1, col2, col3 = st.columns(3)
             with col1:
-                st.metric("📊 Original Rows", f"{summary['rows_original']:,}")
+                st.metric("Total Periods", len(boundary_df))
             with col2:
-                st.metric("✅ Filtered Rows", f"{summary['rows_filtered']:,}")
-            with col3:
                 st.metric(
-                    "📅 Periods Remaining", filtered["_Auto_Time_Period"].nunique()
+                    "Full Periods", (boundary_df["Weeks"] >= period_weeks * 0.95).sum()
+                )
+            with col3:
+                last_period_weeks = boundary_df.iloc[-1]["Weeks"]
+                st.metric("Last Period", f"{last_period_weeks} weeks")
+
+            if last_period_weeks < period_weeks * 0.8:
+                st.info(
+                    f"ℹ️ The last period is shorter ({last_period_weeks} weeks) because your date range doesn't divide evenly by {period_weeks} weeks. This is normal."
                 )
 
-            # Show distribution
-            st.bar_chart(period_dist.set_index("_Auto_Time_Period"))
+    # APPLY TIME PERIODS & FILTERS BUTTON
+    if st.button(
+        "✅ Apply Time Periods & Filters", type="primary", key="apply_filters_btn"
+    ):
 
-        except Exception as e:
-            st.error(f"❌ Error: {e}")
-            st.exception(e)
+        with st.spinner("🔄 Processing..."):
+            try:
+                # STEP 1: Create periods on FULL data
+                st.info("📅 Step 1/2: Creating time periods on full dataset...")
+
+                data_with_periods = create_equal_periods(
+                    data,
+                    date_column="Date",
+                    period_weeks=st.session_state.period_weeks,
+                    period_column_name="_Auto_Time_Period",
+                )
+
+                n_periods = data_with_periods["_Auto_Time_Period"].nunique()
+                st.success(
+                    f"✅ Created {n_periods} time periods of {st.session_state.period_weeks} weeks"
+                )
+
+                # STEP 2: Apply filters
+                st.info("🔍 Step 2/2: Applying filters...")
+
+                filtered = apply_filters(
+                    data_with_periods,
+                    lower=lower_value,
+                    cot=cot_value,
+                    acv_threshold=acv_value,
+                    auto_promo_code=promo_value,
+                    exclude_zero_sales=exclude_zeros,
+                )
+
+                st.session_state.filtered_data = filtered
+
+                # Save filter config
+                st.session_state.filter_config = {
+                    "use_lower": use_lower if "use_lower" in locals() else False,
+                    "lower_value": lower_value,
+                    "use_acv": use_acv if "use_acv" in locals() else False,
+                    "acv_value": acv_value,
+                    "use_cot": use_cot if "use_cot" in locals() else False,
+                    "cot_value": cot_value,
+                    "use_promo": use_promo if "use_promo" in locals() else False,
+                    "promo_value": promo_value,
+                    "exclude_zeros": exclude_zeros,
+                }
+
+                # Show summary
+                summary = get_filter_summary(data_with_periods, filtered)
+
+                st.markdown(
+                    f'<div class="success-box">✅ Filtered to {len(filtered):,} rows ({summary["percent_removed"]:.1f}% removed)</div>',
+                    unsafe_allow_html=True,
+                )
+
+                # Metrics
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("📊 Original Rows", f"{summary['rows_original']:,}")
+                with col2:
+                    st.metric("✅ Filtered Rows", f"{summary['rows_filtered']:,}")
+                with col3:
+                    st.metric(
+                        "📅 Periods Remaining", filtered["_Auto_Time_Period"].nunique()
+                    )
+
+            except Exception as e:
+                st.error(f"❌ Error: {e}")
+                st.exception(e)
 
     # SECTION 2: REGRESSION MODEL
     if st.session_state.filtered_data is not None:
@@ -644,115 +633,115 @@ def page_configure_analysis():
 
         with st.expander("🔄 Configure K-Fold", expanded=True):
 
-            # TIME PERIOD SEGMENTATION
-            st.markdown("#### 📅 Time Period Segmentation")
+            # # TIME PERIOD SEGMENTATION
+            # st.markdown("#### 📅 Time Period Segmentation")
 
-            period_options = get_recommended_period_lengths(
-                filtered, date_column="Date"
-            )
+            # period_options = get_recommended_period_lengths(
+            #     filtered, date_column="Date"
+            # )
 
-            if not period_options:
-                st.error("❌ Insufficient data for time-based k-fold analysis")
-            else:
-                # Show options
-                col1, col2 = st.columns([2, 1])
+            # if not period_options:
+            #     st.error("❌ Insufficient data for time-based k-fold analysis")
+            # else:
+            #     # Show options
+            #     col1, col2 = st.columns([2, 1])
 
-                with col1:
-                    st.markdown("**Available Period Lengths:**")
+            #     with col1:
+            #         st.markdown("**Available Period Lengths:**")
 
-                    for opt in period_options:
-                        icon = (
-                            "⭐"
-                            if opt["recommended"]
-                            else "✓" if opt["is_valid"] else "❌"
-                        )
-                        st.write(
-                            f"{icon} **{opt['weeks']} weeks** → {opt['num_periods']} periods"
-                        )
+            #         for opt in period_options:
+            #             icon = (
+            #                 "⭐"
+            #                 if opt["recommended"]
+            #                 else "✓" if opt["is_valid"] else "❌"
+            #             )
+            #             st.write(
+            #                 f"{icon} **{opt['weeks']} weeks** → {opt['num_periods']} periods"
+            #             )
 
-                with col2:
-                    valid_weeks = [
-                        opt["weeks"] for opt in period_options if opt["is_valid"]
-                    ]
+            #     with col2:
+            #         valid_weeks = [
+            #             opt["weeks"] for opt in period_options if opt["is_valid"]
+            #         ]
 
-                    if valid_weeks:
-                        default_weeks = kfold_config.get(
-                            "period_weeks", 13 if 13 in valid_weeks else valid_weeks[0]
-                        )
+            #         if valid_weeks:
+            #             default_weeks = kfold_config.get(
+            #                 "period_weeks", 13 if 13 in valid_weeks else valid_weeks[0]
+            #             )
 
-                        period_weeks = st.selectbox(
-                            "Select period length",
-                            options=valid_weeks,
-                            index=(
-                                valid_weeks.index(default_weeks)
-                                if default_weeks in valid_weeks
-                                else 0
-                            ),
-                            format_func=lambda x: f"{x} weeks",
-                        )
+            #             period_weeks = st.selectbox(
+            #                 "Select period length",
+            #                 options=valid_weeks,
+            #                 index=(
+            #                     valid_weeks.index(default_weeks)
+            #                     if default_weeks in valid_weeks
+            #                     else 0
+            #                 ),
+            #                 format_func=lambda x: f"{x} weeks",
+            #             )
 
-                        # IMPORTANT: Always store this, even if user doesn't click anything
-                        st.session_state.period_weeks = period_weeks
-                    else:
-                        st.error("No valid period lengths available")
-                        # Set a default
-                        st.session_state.period_weeks = 13
-                        return
+            #             # IMPORTANT: Always store this, even if user doesn't click anything
+            #             st.session_state.period_weeks = period_weeks
+            #         else:
+            #             st.error("No valid period lengths available")
+            #             # Set a default
+            #             st.session_state.period_weeks = 13
+            #             return
 
-                # Show selected period info
-                selected_option = next(
-                    opt for opt in period_options if opt["weeks"] == period_weeks
-                )
-                st.info(f"📊 {selected_option['message']}")
+            #     # Show selected period info
+            #     selected_option = next(
+            #         opt for opt in period_options if opt["weeks"] == period_weeks
+            #     )
+            #     st.info(f"📊 {selected_option['message']}")
 
-                # Preview period distribution
-                with st.expander("👁️ Preview Period Distribution"):
-                    # Use create_equal_periods for the preview
-                    preview_data = create_equal_periods(
-                        filtered,
-                        date_column="Date",
-                        period_weeks=period_weeks,
-                        period_column_name="_preview_period",
-                    )
+            #     # Preview period distribution
+            #     with st.expander("👁️ Preview Period Distribution"):
+            #         # Use create_equal_periods for the preview
+            #         preview_data = create_equal_periods(
+            #             filtered,
+            #             date_column="Date",
+            #             period_weeks=period_weeks,
+            #             period_column_name="_preview_period",
+            #         )
 
-                    # Create summary
-                    period_summary = []
-                    for period in sorted(preview_data["_preview_period"].unique()):
-                        period_data = preview_data[
-                            preview_data["_preview_period"] == period
-                        ]
+            #         # Create summary
+            #         period_summary = []
+            #         for period in sorted(preview_data["_preview_period"].unique()):
+            #             period_data = preview_data[
+            #                 preview_data["_preview_period"] == period
+            #             ]
 
-                        period_min = period_data["Date"].min()
-                        period_max = period_data["Date"].max()
+            #             period_min = period_data["Date"].min()
+            #             period_max = period_data["Date"].max()
 
-                        # Calculate exact weeks
-                        days_span = (period_max - period_min).days + 1
-                        weeks_span = days_span / 7
+            #             # Calculate exact weeks
+            #             days_span = (period_max - period_min).days + 1
+            #             weeks_span = days_span / 7
 
-                        period_summary.append(
-                            {
-                                "Period": period,
-                                "Start_Date": period_min,
-                                "End_Date": period_max,
-                                "Num_Records": len(period_data),
-                                "Days": days_span,
-                                "Weeks": round(weeks_span, 1),
-                            }
-                        )
+            #             period_summary.append(
+            #                 {
+            #                     "Period": period,
+            #                     "Start_Date": period_min,
+            #                     "End_Date": period_max,
+            #                     "Num_Records": len(period_data),
+            #                     "Days": days_span,
+            #                     "Weeks": round(weeks_span, 1),
+            #                 }
+            #             )
 
-                    summary_df = pd.DataFrame(period_summary)
-                    st.dataframe(summary_df, use_container_width=True)
+            #         summary_df = pd.DataFrame(period_summary)
+            #         st.dataframe(summary_df, use_container_width=True)
 
-                    # Show statistics
-                    col1, col2, col3 = st.columns(3)
-                    with col1:
-                        st.metric("Total Periods", len(summary_df))
-                    with col2:
-                        st.metric(
-                            "Avg Weeks/Period", f"{summary_df['Weeks'].mean():.1f}"
-                        )
-                    with col3:
-                        st.metric("Target Weeks", period_weeks)
+            #         # Show statistics
+            #         col1, col2, col3 = st.columns(3)
+            #         with col1:
+            #             st.metric("Total Periods", len(summary_df))
+            #         with col2:
+            #             st.metric(
+            #                 "Avg Weeks/Period", f"{summary_df['Weeks'].mean():.1f}"
+            #             )
+            #         with col3:
+            #             st.metric("Target Weeks", period_weeks)
 
             # Optimal K finder
             st.markdown("#### 🎯 Optimal K Selection")
@@ -775,7 +764,6 @@ def page_configure_analysis():
                         dep_var,
                         continuous_vars,
                         categorical_vars,
-                        period_column="_Auto_Time_Period",
                     )
                 else:
                     st.error("Configure model variables first!")

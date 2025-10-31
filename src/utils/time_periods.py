@@ -96,7 +96,13 @@ def create_equal_periods(
     df = data.copy()
 
     # Ensure date column is datetime
-    df[date_column] = pd.to_datetime(df[date_column])
+    df[date_column] = pd.to_datetime(df[date_column], errors="coerce")
+
+    # Remove any NaT (Not a Time) values
+    df = df.dropna(subset=[date_column])
+
+    if len(df) == 0:
+        raise ValueError(f"No valid dates found in column '{date_column}'")
 
     # Get date range
     min_date = df[date_column].min()
@@ -110,56 +116,32 @@ def create_equal_periods(
     # Calculate which period each date belongs to
     # Formula: period = floor((days_since_start) / period_length) + 1
     days_since_start = (df[date_column] - min_date).dt.days
-    df[period_column_name] = (days_since_start // period_days) + 1
 
-    # Convert to integer
-    df[period_column_name] = df[period_column_name].astype(int)
+    # Handle any potential negative or NaN values
+    days_since_start = days_since_start.fillna(0).clip(lower=0)
 
-    # Handle any potential NaNs (shouldn't happen, but safety check)
-    if df[period_column_name].isna().any():
-        logger.warning(
-            f"Found {df[period_column_name].isna().sum()} NaN periods, filling with 1"
-        )
-        df[period_column_name] = df[period_column_name].fillna(1).astype(int)
+    # Calculate period number
+    period_numbers = (days_since_start // period_days) + 1
+
+    # Convert to integer, handling any remaining NaNs
+    df[period_column_name] = period_numbers.fillna(1).astype(int)
+
+    # Ensure all periods are positive
+    df[period_column_name] = df[period_column_name].clip(lower=1)
 
     # Get statistics
     n_periods = df[period_column_name].nunique()
 
     logger.info(f"Created {n_periods} periods of {period_weeks} weeks each")
 
-    # Log period distribution with actual weeks
-    period_stats = []
+    # Log period distribution
     for period in sorted(df[period_column_name].unique()):
         period_data = df[df[period_column_name] == period]
         period_min = period_data[date_column].min()
         period_max = period_data[date_column].max()
-        days = (period_max - period_min).days + 1
-        weeks = days / 7
-
-        period_stats.append(
-            {
-                "period": period,
-                "start": period_min.date(),
-                "end": period_max.date(),
-                "days": days,
-                "weeks": round(weeks, 1),
-                "records": len(period_data),
-            }
-        )
-
         logger.info(
-            f"Period {period}: {period_min.date()} to {period_max.date()} "
-            f"({days} days = {weeks:.1f} weeks, {len(period_data)} records)"
+            f"Period {period}: {period_min.date()} to {period_max.date()} ({len(period_data)} records)"
         )
-
-    # Check if last period is shorter and warn user
-    if period_stats:
-        last_period = period_stats[-1]
-        if last_period["weeks"] < period_weeks * 0.8:  # Less than 80% of target
-            logger.warning(
-                f"Last period is short: {last_period['weeks']:.1f} weeks "
-                f"(expected {period_weeks} weeks)"
-            )
 
     return df
 
