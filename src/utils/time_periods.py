@@ -73,6 +73,97 @@ def create_time_periods(
     return df
 
 
+def create_equal_periods(
+    data: pd.DataFrame,
+    date_column: str = "Date",
+    period_weeks: int = 13,
+    period_column_name: str = "Time_Period",
+) -> pd.DataFrame:
+    """
+    Create time periods with EXACT equal lengths by assigning dates to period buckets.
+
+    This approach ensures each period has exactly N weeks, even if there are data gaps.
+
+    Args:
+        data: DataFrame with date column
+        date_column: Name of the date column
+        period_weeks: Number of weeks per period (4, 8, 12, or 13)
+        period_column_name: Name for the new period column
+
+    Returns:
+        DataFrame with new period column added
+    """
+    df = data.copy()
+
+    # Ensure date column is datetime
+    df[date_column] = pd.to_datetime(df[date_column])
+
+    # Get date range
+    min_date = df[date_column].min()
+    max_date = df[date_column].max()
+
+    logger.info(f"Date range: {min_date.date()} to {max_date.date()}")
+
+    # Calculate period length in days
+    period_days = period_weeks * 7
+
+    # Calculate which period each date belongs to
+    # Formula: period = floor((days_since_start) / period_length) + 1
+    days_since_start = (df[date_column] - min_date).dt.days
+    df[period_column_name] = (days_since_start // period_days) + 1
+
+    # Convert to integer
+    df[period_column_name] = df[period_column_name].astype(int)
+
+    # Handle any potential NaNs (shouldn't happen, but safety check)
+    if df[period_column_name].isna().any():
+        logger.warning(
+            f"Found {df[period_column_name].isna().sum()} NaN periods, filling with 1"
+        )
+        df[period_column_name] = df[period_column_name].fillna(1).astype(int)
+
+    # Get statistics
+    n_periods = df[period_column_name].nunique()
+
+    logger.info(f"Created {n_periods} periods of {period_weeks} weeks each")
+
+    # Log period distribution with actual weeks
+    period_stats = []
+    for period in sorted(df[period_column_name].unique()):
+        period_data = df[df[period_column_name] == period]
+        period_min = period_data[date_column].min()
+        period_max = period_data[date_column].max()
+        days = (period_max - period_min).days + 1
+        weeks = days / 7
+
+        period_stats.append(
+            {
+                "period": period,
+                "start": period_min.date(),
+                "end": period_max.date(),
+                "days": days,
+                "weeks": round(weeks, 1),
+                "records": len(period_data),
+            }
+        )
+
+        logger.info(
+            f"Period {period}: {period_min.date()} to {period_max.date()} "
+            f"({days} days = {weeks:.1f} weeks, {len(period_data)} records)"
+        )
+
+    # Check if last period is shorter and warn user
+    if period_stats:
+        last_period = period_stats[-1]
+        if last_period["weeks"] < period_weeks * 0.8:  # Less than 80% of target
+            logger.warning(
+                f"Last period is short: {last_period['weeks']:.1f} weeks "
+                f"(expected {period_weeks} weeks)"
+            )
+
+    return df
+
+
 def validate_period_coverage(
     data: pd.DataFrame,
     date_column: str = "Date",
@@ -112,19 +203,36 @@ def validate_period_coverage(
     # Create temporary periods to check distribution
     temp_df = create_time_periods(df, date_column, period_weeks, "_temp_period")
 
-    period_summary = (
-        temp_df.groupby("_temp_period")
-        .agg({date_column: ["min", "max", "count"]})
-        .reset_index()
-    )
+    # Calculate actual weeks per period based on the date range within each period
+    period_stats = []
+    for period_num in sorted(temp_df["_temp_period"].unique()):
+        period_data = temp_df[temp_df["_temp_period"] == period_num]
 
-    period_summary.columns = ["Period", "Start_Date", "End_Date", "Num_Records"]
-    period_summary["Weeks"] = (
-        (period_summary["End_Date"] - period_summary["Start_Date"]).dt.days / 7
-    ).round(1)
+        period_min = period_data[date_column].min()
+        period_max = period_data[date_column].max()
+
+        # Calculate expected vs actual
+        actual_days = (
+            period_max - period_min
+        ).days + 1  # +1 to include both start and end dates
+        actual_weeks = actual_days / 7
+
+        period_stats.append(
+            {
+                "Period": period_num,
+                "Start_Date": period_min,
+                "End_Date": period_max,
+                "Num_Records": len(period_data),
+                "Days": actual_days,
+                "Weeks": round(actual_weeks, 1),
+                "Expected_Weeks": period_weeks,
+            }
+        )
+
+    period_summary = pd.DataFrame(period_stats)
 
     message = (
-        f"✅ Valid: {expected_periods} periods of {period_weeks} weeks "
+        f"✅ Valid: {expected_periods} periods of ~{period_weeks} weeks "
         f"(Total: {total_weeks:.1f} weeks)"
     )
 

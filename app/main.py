@@ -41,6 +41,7 @@ from src.models.regression import RegressionPipelineBuilder
 from src.outliers.analyzer import OutlierAnalyzer
 from src.outliers.config import OutlierConfig
 from src.utils.time_periods import (
+    create_equal_periods,  # ADD THIS LINE
     create_time_periods,
     get_recommended_period_lengths,
     validate_period_coverage,
@@ -384,20 +385,161 @@ def page_configure_analysis():
             "Exclude zero unit sales", value=filter_config.get("exclude_zeros", True)
         )
 
-    if st.button("✅ Apply Filters", type="primary"):
-        show_loading_animation("🔄 Applying filters...", 0.3)
+    # TIME PERIOD SELECTION (BEFORE FILTERING)
+    st.subheader("⏰ Time Period Segmentation")
+
+    st.info(
+        "🗓️ Time periods are created on the full dataset before filtering to ensure consistent calendar alignment."
+    )
+
+    period_options = get_recommended_period_lengths(data, date_column="Date")
+
+    if not period_options:
+        st.error("❌ Insufficient data for time-based analysis")
+    else:
+        col1, col2 = st.columns([2, 1])
+
+        with col1:
+            st.markdown("**Available Period Lengths:**")
+            for opt in period_options:
+                icon = "⭐" if opt["recommended"] else "✓" if opt["is_valid"] else "❌"
+                st.write(
+                    f"{icon} **{opt['weeks']} weeks** → {opt['num_periods']} periods"
+                )
+
+        with col2:
+            valid_weeks = [opt["weeks"] for opt in period_options if opt["is_valid"]]
+
+            if valid_weeks:
+                default_weeks = st.session_state.get(
+                    "period_weeks", 13 if 13 in valid_weeks else valid_weeks[0]
+                )
+
+                period_weeks = st.selectbox(
+                    "Select period length",
+                    options=valid_weeks,
+                    index=(
+                        valid_weeks.index(default_weeks)
+                        if default_weeks in valid_weeks
+                        else 0
+                    ),
+                    format_func=lambda x: f"{x} weeks",
+                )
+
+                st.session_state.period_weeks = period_weeks
+            else:
+                st.error("No valid period lengths")
+                st.session_state.period_weeks = 13
+
+        # Show selected period info
+        selected_option = next(
+            opt for opt in period_options if opt["weeks"] == period_weeks
+        )
+        st.success(f"📊 {selected_option['message']}")
+
+        # Preview on FULL data
+        with st.expander("👁️ Preview Period Distribution (Full Data)"):
+            preview_data = create_equal_periods(
+                data,
+                date_column="Date",
+                period_weeks=period_weeks,
+                period_column_name="_preview_period",
+            )
+
+            period_summary = []
+            for period in sorted(preview_data["_preview_period"].unique()):
+                period_data = preview_data[preview_data["_preview_period"] == period]
+
+                period_min = period_data["Date"].min()
+                period_max = period_data["Date"].max()
+
+                # Calculate actual span (may differ from target if data has gaps)
+                days_span = (period_max - period_min).days + 1
+                weeks_span = days_span / 7
+
+                # Calculate expected span
+                expected_days = period_weeks * 7
+                expected_weeks = period_weeks
+
+                period_summary.append(
+                    {
+                        "Period": period,
+                        "Start_Date": period_min,
+                        "End_Date": period_max,
+                        "Num_Records": len(period_data),
+                        "Actual_Days": days_span,
+                        "Actual_Weeks": round(weeks_span, 1),
+                        "Target_Weeks": expected_weeks,
+                        "Has_Gaps": "⚠️" if weeks_span < expected_weeks * 0.9 else "✓",
+                    }
+                )
+
+            summary_df = pd.DataFrame(period_summary)
+
+            # Color code the display
+            st.dataframe(
+                summary_df.style.applymap(
+                    lambda x: "background-color: #ffcccc" if x == "⚠️" else "",
+                    subset=["Has_Gaps"],
+                ),
+                use_container_width=True,
+            )
+
+            # Show statistics
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.metric("Total Periods", len(summary_df))
+            with col2:
+                st.metric(
+                    "Avg Weeks/Period", f"{summary_df['Actual_Weeks'].mean():.1f}"
+                )
+            with col3:
+                st.metric("Target Weeks", period_weeks)
+            with col4:
+                periods_with_gaps = (summary_df["Has_Gaps"] == "⚠️").sum()
+                st.metric("Periods with Gaps", periods_with_gaps)
+
+            if periods_with_gaps > 0:
+                st.warning(
+                    f"⚠️ {periods_with_gaps} period(s) appear shorter than {period_weeks} weeks. "
+                    f"This happens when:\n"
+                    f"- Your data has missing dates/weeks\n"
+                    f"- The last period doesn't contain a full {period_weeks} weeks\n"
+                    f"- There are gaps in your time series data"
+                )
+
+    # APPLY FILTERS BUTTON (NOW CREATES PERIODS FIRST)
+    if st.button("✅ Apply Time Periods & Filters", type="primary"):
+        show_loading_animation("🔄 Creating time periods on full dataset...", 0.3)
 
         try:
-            filtered = apply_filters(
+            # STEP 1: Create periods on FULL data
+            data_with_periods = create_equal_periods(
                 data,
+                date_column="Date",
+                period_weeks=st.session_state.period_weeks,
+                period_column_name="_Auto_Time_Period",
+            )
+
+            st.success(
+                f"✅ Created {data_with_periods['_Auto_Time_Period'].nunique()} time periods"
+            )
+
+            # STEP 2: Apply filters
+            show_loading_animation("🔄 Applying filters...", 0.3)
+
+            filtered = apply_filters(
+                data_with_periods,  # Filter data that already has periods
                 lower=lower_value,
                 cot=cot_value,
                 acv_threshold=acv_value,
                 auto_promo_code=promo_value,
                 exclude_zero_sales=exclude_zeros,
             )
+
             st.session_state.filtered_data = filtered
 
+            # Save filter config
             st.session_state.filter_config = {
                 "use_lower": use_lower if "use_lower" in locals() else False,
                 "lower_value": lower_value,
@@ -410,22 +552,36 @@ def page_configure_analysis():
                 "exclude_zeros": exclude_zeros,
             }
 
-            summary = get_filter_summary(data, filtered)
+            summary = get_filter_summary(data_with_periods, filtered)
+
             st.markdown(
                 f'<div class="success-box">✅ Filtered to {len(filtered):,} rows ({summary["percent_removed"]:.1f}% removed)</div>',
                 unsafe_allow_html=True,
             )
 
+            # Show period distribution AFTER filtering
+            st.markdown("#### 📊 Period Distribution After Filtering")
+
+            period_dist = (
+                filtered.groupby("_Auto_Time_Period").size().reset_index(name="Records")
+            )
+
             col1, col2, col3 = st.columns(3)
             with col1:
-                st.metric("📊 Original", f"{summary['rows_original']:,}")
+                st.metric("📊 Original Rows", f"{summary['rows_original']:,}")
             with col2:
-                st.metric("✅ Filtered", f"{summary['rows_filtered']:,}")
+                st.metric("✅ Filtered Rows", f"{summary['rows_filtered']:,}")
             with col3:
-                st.metric("🗑️ Removed", f"{summary['rows_removed']:,}")
+                st.metric(
+                    "📅 Periods Remaining", filtered["_Auto_Time_Period"].nunique()
+                )
+
+            # Show distribution
+            st.bar_chart(period_dist.set_index("_Auto_Time_Period"))
 
         except Exception as e:
             st.error(f"❌ Error: {e}")
+            st.exception(e)
 
     # SECTION 2: REGRESSION MODEL
     if st.session_state.filtered_data is not None:
@@ -551,12 +707,52 @@ def page_configure_analysis():
 
                 # Preview period distribution
                 with st.expander("👁️ Preview Period Distribution"):
-                    is_valid, message, period_summary = validate_period_coverage(
-                        filtered, "Date", period_weeks
+                    # Use create_equal_periods for the preview
+                    preview_data = create_equal_periods(
+                        filtered,
+                        date_column="Date",
+                        period_weeks=period_weeks,
+                        period_column_name="_preview_period",
                     )
 
-                    if period_summary is not None:
-                        st.dataframe(period_summary, use_container_width=True)
+                    # Create summary
+                    period_summary = []
+                    for period in sorted(preview_data["_preview_period"].unique()):
+                        period_data = preview_data[
+                            preview_data["_preview_period"] == period
+                        ]
+
+                        period_min = period_data["Date"].min()
+                        period_max = period_data["Date"].max()
+
+                        # Calculate exact weeks
+                        days_span = (period_max - period_min).days + 1
+                        weeks_span = days_span / 7
+
+                        period_summary.append(
+                            {
+                                "Period": period,
+                                "Start_Date": period_min,
+                                "End_Date": period_max,
+                                "Num_Records": len(period_data),
+                                "Days": days_span,
+                                "Weeks": round(weeks_span, 1),
+                            }
+                        )
+
+                    summary_df = pd.DataFrame(period_summary)
+                    st.dataframe(summary_df, use_container_width=True)
+
+                    # Show statistics
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        st.metric("Total Periods", len(summary_df))
+                    with col2:
+                        st.metric(
+                            "Avg Weeks/Period", f"{summary_df['Weeks'].mean():.1f}"
+                        )
+                    with col3:
+                        st.metric("Target Weeks", period_weeks)
 
             # Optimal K finder
             st.markdown("#### 🎯 Optimal K Selection")
@@ -566,7 +762,7 @@ def page_configure_analysis():
             if st.button("🔍 Find Optimal K", use_container_width=True):
                 if continuous_vars or categorical_vars:
                     # Create time periods BEFORE finding optimal k
-                    filtered_with_periods = create_time_periods(
+                    filtered_with_periods = create_equal_periods(
                         filtered,
                         date_column="Date",
                         period_weeks=st.session_state.period_weeks,
@@ -758,10 +954,13 @@ def page_configure_analysis():
         )
 
 
-def find_optimal_k(
-    data, dep_var, continuous_vars, categorical_vars, period_column="_Auto_Time_Period"
-):
+def find_optimal_k(data, dep_var, continuous_vars, categorical_vars):
     """Find optimal K using k-fold analysis."""
+
+    # Verify periods exist
+    if "_Auto_Time_Period" not in data.columns:
+        st.error("❌ Time periods not found. Please apply filters first.")
+        return
 
     with st.spinner("🔍 Finding optimal K (testing k=2 to k=10)..."):
         try:
@@ -776,18 +975,18 @@ def find_optimal_k(
             X, y = builder.prepare_data(data)
             pipeline = builder.build()
 
-            # Get account column
+            # Get config
             account_col = st.session_state.kfold_config.get("account_column", "Account")
             weight_col = st.session_state.kfold_config.get("weight_column")
 
-            # Determine max K based on number of periods
-            max_k = data[period_column].nunique()
+            # Determine max K based on periods in filtered data
+            max_k = data["_Auto_Time_Period"].nunique()
             k_range = range(2, min(11, max_k + 1))
 
             # Test different K values
             temp_config = KFoldConfig(
-                n_splits=5,  # Will be changed in loop
-                group_column=period_column,
+                n_splits=5,
+                group_column="_Auto_Time_Period",
                 account_column=account_col,
                 weight_column=weight_col,
                 verbose=False,
@@ -802,7 +1001,7 @@ def find_optimal_k(
             st.session_state.optimal_k = optimal_k
             st.session_state.optimal_k_results = k_results
 
-            # Force rerun to display outside expander
+            # Force rerun
             st.rerun()
 
         except Exception as e:
@@ -872,28 +1071,21 @@ def run_complete_analysis():
     status_text = st.empty()
 
     try:
-        # STEP 0: Create time periods
-        status_text.markdown("### 🗓️ Step 0/3: Creating time periods...")
-        progress_bar.progress(5)
+        # Verify periods exist
+        if "_Auto_Time_Period" not in st.session_state.filtered_data.columns:
+            st.error(
+                "❌ Time periods not found. Please go back to Configure Analysis and apply filters."
+            )
+            return
 
-        from src.utils.time_periods import create_time_periods
-
-        # Get period configuration
-        period_weeks = st.session_state.kfold_config.get("period_weeks", 13)
-
-        # Create time periods on filtered data
-        filtered_with_periods = create_time_periods(
-            st.session_state.filtered_data,
-            date_column="Date",
-            period_weeks=period_weeks,
-            period_column_name="_Auto_Time_Period",
-        )
-
-        # Store for later use
-        st.session_state.filtered_data_with_periods = filtered_with_periods
-
+        filtered_with_periods = st.session_state.filtered_data
+        period_weeks = st.session_state.get("period_weeks", 13)
         n_periods = filtered_with_periods["_Auto_Time_Period"].nunique()
-        status_text.markdown(f"✅ Created {n_periods} periods of {period_weeks} weeks")
+
+        status_text.markdown(
+            f"### ✅ Using {n_periods} periods of {period_weeks} weeks"
+        )
+        progress_bar.progress(10)
         time.sleep(0.5)
 
         # STEP 1: Build Model
@@ -903,7 +1095,7 @@ def run_complete_analysis():
 
         reg_config = RegressionConfig(**st.session_state.reg_config)
         builder = RegressionPipelineBuilder(reg_config)
-        X, y = builder.prepare_data(filtered_with_periods)  # Use data WITH periods
+        X, y = builder.prepare_data(filtered_with_periods)
         pipeline = builder.build()
 
         progress_bar.progress(30)
@@ -914,17 +1106,22 @@ def run_complete_analysis():
         status_text.markdown("### 🔄 Step 2/3: Running K-Fold cross-validation...")
         progress_bar.progress(35)
 
-        # Create KFold config with auto-generated period column
-        kfold_config_dict = st.session_state.kfold_config.copy()
-        kfold_config_dict["group_column"] = "_Auto_Time_Period"
+        # Create KFold config
+        kfold_config_dict = {
+            "n_splits": st.session_state.kfold_config["n_splits"],
+            "group_column": "_Auto_Time_Period",
+            "account_column": st.session_state.kfold_config["account_column"],
+            "weight_column": st.session_state.kfold_config["weight_column"],
+            "shuffle": st.session_state.kfold_config.get("shuffle", True),
+            "random_state": st.session_state.kfold_config.get("random_state", 42),
+            "verbose": st.session_state.kfold_config.get("verbose", True),
+        }
 
         kfold_config = KFoldConfig(**kfold_config_dict)
         kfold_analyzer = KFoldAnalyzer(kfold_config)
 
         with st.spinner(f"Running {kfold_config.n_splits}-fold cross-validation..."):
-            kfold_results = kfold_analyzer.run(
-                filtered_with_periods, X, y, pipeline  # Use data WITH periods
-            )
+            kfold_results = kfold_analyzer.run(filtered_with_periods, X, y, pipeline)
 
         st.session_state.kfold_results = kfold_results
         progress_bar.progress(65)
